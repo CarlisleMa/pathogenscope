@@ -8,10 +8,13 @@ Pipeline steps:
     1. FlashPPI: Predict proteome-scale PPIs
     2. Community detection: Louvain clustering into functional modules
     3. Annotation: Fetch UniProt annotations + target scoring
+    4. Agent analysis: Downstream target validation, druggability, interface analysis
 """
 
 import argparse
 import os
+
+import pandas as pd
 
 from pathogenscope.flashppi.predict import FlashPPIPredictor, FlashPPIConfig
 from pathogenscope.community.detect import (
@@ -25,6 +28,14 @@ from pathogenscope.annotation.annotate import (
     fetch_uniprot_batch,
     score_targets,
 )
+from pathogenscope.agent import (
+    TargetValidationAgent,
+    DruggabilityAgent,
+    CommunityInterpretationAgent,
+    InterfaceHotspotAgent,
+    DisruptionStrategyAgent,
+    ReportGeneratorAgent,
+)
 
 
 def main():
@@ -36,6 +47,9 @@ def main():
     parser.add_argument("--resolution", type=float, default=1.0, help="Louvain resolution")
     parser.add_argument("--skip_flashppi", action="store_true", help="Skip FlashPPI, use existing predictions")
     parser.add_argument("--no_annotations", action="store_true", help="Skip UniProt annotation fetch")
+    parser.add_argument("--no_agents", action="store_true", help="Skip downstream agent analysis")
+    parser.add_argument("--save_contact_maps", action="store_true", help="Save contact maps for interface analysis")
+    parser.add_argument("--agent_top_n", type=int, default=20, help="Number of top targets for agent analysis")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -44,6 +58,8 @@ def main():
     targets_csv = os.path.join(args.output_dir, "target_scores.csv")
 
     # --- Step 1: FlashPPI ---
+    contact_maps = {}
+    sequences = None
     if not args.skip_flashppi:
         print("=" * 60)
         print("STEP 1: FlashPPI Proteome-Scale PPI Prediction")
@@ -53,10 +69,16 @@ def main():
             stage1_top_k=args.top_k,
         )
         predictor = FlashPPIPredictor(config)
-        predictions = predictor.predict_proteome(args.fasta, ppi_csv)
+        if args.save_contact_maps:
+            predictions, contact_maps = predictor.predict_proteome(
+                args.fasta, ppi_csv, save_contact_maps=True
+            )
+            from pathogenscope.flashppi.predict import load_fasta
+            sequences = load_fasta(args.fasta, config.max_len)
+        else:
+            predictions = predictor.predict_proteome(args.fasta, ppi_csv)
         print(f"  -> {len(predictions)} interactions predicted\n")
     else:
-        import pandas as pd
         print("Skipping FlashPPI, loading existing predictions...")
         predictions = pd.read_csv(ppi_csv)
 
@@ -89,6 +111,64 @@ def main():
     scored = score_targets(stats, annotations)
     scored.to_csv(targets_csv, index=False)
 
+    # --- Step 4: Agent Analysis ---
+    if not args.no_agents:
+        print("\n" + "=" * 60)
+        print("STEP 4: Downstream Agent Analysis")
+        print("=" * 60)
+
+        agent_config = {"top_n": args.agent_top_n}
+
+        # 4a. Target Validation
+        print("\n--- Target Validation ---")
+        tv_agent = TargetValidationAgent(agent_config)
+        tv_result = tv_agent.run(target_scores=scored, annotations=annotations)
+        print(f"  -> {tv_result.data.get('summary', {})}")
+
+        # 4b. Druggability Assessment
+        print("\n--- Druggability Assessment ---")
+        drug_agent = DruggabilityAgent(agent_config)
+        drug_result = drug_agent.run(target_scores=scored, annotations=annotations)
+        print(f"  -> {drug_result.data.get('summary', {})}")
+
+        # 4c. Community Interpretation
+        print("\n--- Community Interpretation ---")
+        comm_agent = CommunityInterpretationAgent()
+        comm_result = comm_agent.run(community_stats=stats, annotations=annotations)
+
+        # 4d. Interface Hotspot (only if contact maps available)
+        hotspot_result = None
+        disruption_result = None
+        if contact_maps:
+            print("\n--- Interface Hotspot Analysis ---")
+            hs_agent = InterfaceHotspotAgent()
+            hotspot_result = hs_agent.run(
+                contact_maps=contact_maps, sequences=sequences, annotations=annotations
+            )
+
+            # 4e. Disruption Strategy (needs hotspot results)
+            print("\n--- Disruption Strategy ---")
+            ds_agent = DisruptionStrategyAgent()
+            disruption_result = ds_agent.run(
+                hotspot_results=hotspot_result, target_scores=scored
+            )
+        else:
+            print("\n  Skipping interface/disruption analysis (no contact maps)")
+            print("  Re-run with --save_contact_maps to enable")
+
+        # 4f. Generate Report
+        print("\n--- Generating Target Dossier ---")
+        report_agent = ReportGeneratorAgent()
+        report_result = report_agent.run(
+            target_scores=scored,
+            validation=tv_result,
+            druggability=drug_result,
+            community=comm_result,
+            hotspot=hotspot_result,
+            disruption=disruption_result,
+            output_dir=args.output_dir,
+        )
+
     # --- Summary ---
     print("\n" + "=" * 60)
     print("PIPELINE COMPLETE")
@@ -96,6 +176,9 @@ def main():
     print(f"  PPI predictions:  {ppi_csv}")
     print(f"  Community stats:  {community_csv}")
     print(f"  Target scores:    {targets_csv}")
+    if not args.no_agents:
+        dossier = os.path.join(args.output_dir, "target_dossier.md")
+        print(f"  Target dossier:   {dossier}")
     print(f"\n  Top 10 target candidates:")
     top_cols = ["protein_id", "ppi_community", "ppi_edges", "target_score"]
     available_cols = [c for c in top_cols if c in scored.columns]
