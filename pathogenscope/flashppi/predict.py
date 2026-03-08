@@ -3,13 +3,13 @@ FlashPPI inference pipeline.
 
 Wraps the FlashPPI model (tattabio/flashppi) for proteome-scale PPI prediction.
 Follows the three-stage pipeline:
-  1. Embed all proteins into shared latent space
+  1. Embed all proteins (encode_protein → CLIP embeddings via forward)
   2. FAISS nearest-neighbor retrieval (top-k candidates)
   3. Residue-level contact map scoring on retrieved pairs
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import faiss
 import numpy as np
@@ -25,16 +25,16 @@ class FlashPPIConfig:
     model_name: str = "tattabio/flashppi"
     stage1_top_k: int = 100
     threshold: float = 0.5
-    batch_size: int = 64
+    batch_size: int = 16
     max_len: int = 1024
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def load_fasta(fasta_path: str) -> dict[str, str]:
+def load_fasta(fasta_path: str, max_len: int = 1024) -> dict[str, str]:
     """Load FASTA file and return {id: sequence} dict."""
     sequences = {}
     for record in SeqIO.parse(fasta_path, "fasta"):
-        seq = str(record.seq)[:1024]  # truncate to max_len
+        seq = str(record.seq)[:max_len]
         sequences[record.id] = seq
     return sequences
 
@@ -53,151 +53,173 @@ class FlashPPIPredictor:
         ).to(self.config.device)
         self.model.eval()
 
-    @torch.no_grad()
-    def _embed_batch(self, sequences: list[str]) -> tuple[np.ndarray, list[torch.Tensor]]:
-        """Embed a batch of sequences. Returns (pooled_embeddings, residue_embeddings)."""
+    def _tokenize(self, sequence: str) -> dict[str, torch.Tensor]:
+        """Tokenize a single protein sequence."""
+        tokens = self.tokenizer(
+            sequence,
+            return_tensors="pt",
+            padding=False,
+            truncation=True,
+            max_length=self.config.max_len,
+        )
+        return {k: v.to(self.config.device) for k, v in tokens.items()}
+
+    def _tokenize_batch(self, sequences: list[str]) -> dict[str, torch.Tensor]:
+        """Tokenize a batch of protein sequences."""
         tokens = self.tokenizer(
             sequences,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.config.max_len,
-        ).to(self.config.device)
+        )
+        return {k: v.to(self.config.device) for k, v in tokens.items()}
 
-        outputs = self.model(**tokens, output_hidden_states=True)
-
-        # Get pooled embeddings for retrieval
-        if hasattr(outputs, "query_embeddings"):
-            pooled = outputs.query_embeddings.cpu().numpy()
-        else:
-            # Fallback: mean pool last hidden state
-            hidden = outputs.last_hidden_state
-            mask = tokens["attention_mask"].unsqueeze(-1)
-            pooled = (hidden * mask).sum(1) / mask.sum(1)
-            pooled = pooled.cpu().numpy()
-
-        # Get residue-level embeddings for contact prediction
-        residue_embs = []
-        if hasattr(outputs, "residue_embeddings"):
-            for i in range(len(sequences)):
-                seq_len = len(sequences[i])
-                residue_embs.append(outputs.residue_embeddings[i, :seq_len].cpu())
-        else:
-            hidden = outputs.last_hidden_state
-            for i in range(len(sequences)):
-                seq_len = len(sequences[i])
-                residue_embs.append(hidden[i, :seq_len].cpu())
-
-        return pooled, residue_embs
-
-    def embed_proteome(
+    @torch.no_grad()
+    def embed_proteins(
         self, sequences: dict[str, str]
-    ) -> tuple[list[str], np.ndarray, list[torch.Tensor]]:
-        """Stage 1: Embed all proteins."""
+    ) -> tuple[list[str], np.ndarray, list[torch.Tensor], list[torch.Tensor]]:
+        """
+        Stage 1: Embed all proteins.
+
+        Returns:
+            ids: protein identifiers
+            clip_embeddings: (N, D) normalized CLIP embeddings for FAISS retrieval
+            all_residue_embs: per-protein residue embeddings for contact prediction
+            all_masks: per-protein attention masks
+        """
         ids = list(sequences.keys())
         seqs = list(sequences.values())
-        all_pooled = []
+        all_clip = []
         all_residue = []
+        all_masks = []
 
         for i in tqdm(range(0, len(seqs), self.config.batch_size), desc="Embedding"):
-            batch = seqs[i : i + self.config.batch_size]
-            pooled, residue = self._embed_batch(batch)
-            all_pooled.append(pooled)
-            all_residue.extend(residue)
+            batch_seqs = seqs[i : i + self.config.batch_size]
 
-        pooled_matrix = np.vstack(all_pooled).astype(np.float32)
+            for seq in batch_seqs:
+                tokens = self._tokenize(seq)
+                mask = tokens.get("attention_mask")
+                # Single pass: encode_protein gives residue embeddings,
+                # then head_q gives CLIP embedding for retrieval
+                residue_emb = self.model.encode_protein(tokens["input_ids"], mask)
+                clip_emb = self.model.head_q(residue_emb, mask)
+
+                all_residue.append(residue_emb.squeeze(0).cpu())
+                all_masks.append(mask.squeeze(0).cpu())
+                all_clip.append(clip_emb.squeeze(0).cpu().numpy())
+
+        clip_matrix = np.vstack(all_clip).astype(np.float32)
         # L2 normalize for cosine similarity
-        norms = np.linalg.norm(pooled_matrix, axis=1, keepdims=True)
+        norms = np.linalg.norm(clip_matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1
-        pooled_matrix = pooled_matrix / norms
+        clip_matrix = clip_matrix / norms
 
-        return ids, pooled_matrix, all_residue
+        return ids, clip_matrix, all_residue, all_masks
 
     def retrieve_candidates(
-        self, pooled: np.ndarray
+        self, clip_embeddings: np.ndarray
     ) -> list[list[tuple[int, float]]]:
         """Stage 2: FAISS nearest-neighbor retrieval."""
-        k = min(self.config.stage1_top_k, len(pooled))
-        index = faiss.IndexFlatIP(pooled.shape[1])
-        index.add(pooled)
+        n = len(clip_embeddings)
+        k = min(self.config.stage1_top_k, n)
+        index = faiss.IndexFlatIP(clip_embeddings.shape[1])
+        index.add(clip_embeddings)
 
-        scores, indices = index.search(pooled, k)
+        scores, indices = index.search(clip_embeddings, k)
         candidates = []
-        for i in range(len(pooled)):
+        for i in range(n):
             pairs = []
             for j_idx in range(k):
                 j = int(indices[i, j_idx])
-                if j > i:  # avoid self and duplicates
+                if j > i:  # avoid self-pairs and duplicates
                     pairs.append((j, float(scores[i, j_idx])))
             candidates.append(pairs)
         return candidates
 
     @torch.no_grad()
-    def score_contact(
-        self, res_emb_a: torch.Tensor, res_emb_b: torch.Tensor
-    ) -> float:
-        """Stage 3: Predict contact map and return max contact score."""
-        if hasattr(self.model, "predict_contacts"):
-            contact_map = self.model.predict_contacts(
-                res_emb_a.unsqueeze(0).to(self.config.device),
-                res_emb_b.unsqueeze(0).to(self.config.device),
-            )
-            contact_map = torch.sigmoid(contact_map).cpu()
-        else:
-            # Fallback: dot product attention as contact proxy
-            a = res_emb_a.float()
-            b = res_emb_b.float()
-            contact_map = torch.sigmoid(a @ b.T)
+    def score_pair(
+        self,
+        residue_emb1: torch.Tensor,
+        residue_emb2: torch.Tensor,
+        mask1: torch.Tensor,
+        mask2: torch.Tensor,
+    ) -> tuple[float, torch.Tensor]:
+        """
+        Stage 3: Predict contact map for a protein pair.
 
-        return float(contact_map.max())
+        Returns (contact_score, contact_map).
+        """
+        contact_map, contact_mask = self.model.predict_contacts(
+            residue_emb1.unsqueeze(0).to(self.config.device),
+            residue_emb2.unsqueeze(0).to(self.config.device),
+            mask1.unsqueeze(0).to(self.config.device),
+            mask2.unsqueeze(0).to(self.config.device),
+        )
+        # Apply sigmoid to get probabilities, mask out padding
+        cmap = torch.sigmoid(contact_map.squeeze(0)).cpu()
+        if contact_mask is not None:
+            valid_mask = contact_mask.squeeze(0).cpu().bool()
+            masked_cmap = cmap * valid_mask.float()
+        else:
+            masked_cmap = cmap
+        # Contact score = max predicted contact probability
+        score = float(masked_cmap.max())
+        return score, cmap
 
     def predict_proteome(
         self,
         fasta_path: str,
         output_path: str | None = None,
+        save_contact_maps: bool = False,
     ) -> pd.DataFrame:
         """Run full three-stage pipeline on a proteome FASTA."""
-        # Load
-        sequences = load_fasta(fasta_path)
+        sequences = load_fasta(fasta_path, self.config.max_len)
         print(f"Loaded {len(sequences)} proteins from {fasta_path}")
 
         # Stage 1: Embed
-        ids, pooled, residue_embs = self.embed_proteome(sequences)
+        ids, clip_embs, residue_embs, masks = self.embed_proteins(sequences)
 
         # Stage 2: Retrieve
         print("Retrieving candidates...")
-        candidates = self.retrieve_candidates(pooled)
+        candidates = self.retrieve_candidates(clip_embs)
 
         # Stage 3: Score contacts
         results = []
+        contact_maps = {}
         total_pairs = sum(len(c) for c in candidates)
         print(f"Scoring {total_pairs} candidate pairs...")
 
         with tqdm(total=total_pairs, desc="Contact scoring") as pbar:
             for i, pairs in enumerate(candidates):
                 for j, retrieval_score in pairs:
-                    contact_score = self.score_contact(
-                        residue_embs[i], residue_embs[j]
+                    score, cmap = self.score_pair(
+                        residue_embs[i], residue_embs[j],
+                        masks[i], masks[j],
                     )
-                    if contact_score >= self.config.threshold:
-                        results.append(
-                            {
-                                "query_id": ids[i],
-                                "match_id": ids[j],
-                                "contact_score": round(contact_score, 4),
-                            }
-                        )
+                    if score >= self.config.threshold:
+                        results.append({
+                            "query_id": ids[i],
+                            "match_id": ids[j],
+                            "contact_score": round(score, 4),
+                        })
+                        if save_contact_maps:
+                            contact_maps[(ids[i], ids[j])] = cmap
                     pbar.update(1)
 
         df = pd.DataFrame(results)
         if len(df) > 0:
-            df = df.sort_values("contact_score", ascending=False).reset_index(drop=True)
+            # Deduplicate: keep max score per pair
+            df = df.sort_values("contact_score", ascending=False)
+            df = df.drop_duplicates(subset=["query_id", "match_id"]).reset_index(drop=True)
 
         if output_path:
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             df.to_csv(output_path, index=False)
             print(f"Saved {len(df)} interactions to {output_path}")
 
+        if save_contact_maps:
+            return df, contact_maps
         return df
 
 
