@@ -1,0 +1,32 @@
+{
+  "ground_truth": {
+    "vfdb_seq_matched": 77,
+    "phibase_genes": 186,
+    "combined_in_proteome": 200
+  },
+  "method": "Tiered ranking (convergent > hub > PPI-connected > mimicry)",
+  "cv_auroc": "0.578 +/- 0.070 (bio features only, 5-fold CV)",
+  "results": {
+    "mimicry": {
+      "n_predictions": 1475,
+      "auroc": 0.5037,
+      "precision_at_50": 0.02,
+      "precision_at_100": 0.03,
+      "enrichment_at_100": 0.55
+    },
+    "hubs": {
+      "n_predictions": 338,
+      "auroc": 0.3906,
+      "precision_at_50": 0.04,
+      "precision_at_100": 0.03,
+      "enrichment_at_100": 0.55
+    },
+    "merged": {
+      "n_predictions": 3661,
+      "auroc": 0.5413,
+      "precision_at_50": 0.08,
+      "precision_at_100": 0.06,
+      "enrichment_at_100": 1.1
+    }
+  }
+}
