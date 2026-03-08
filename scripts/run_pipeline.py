@@ -29,6 +29,7 @@ from pathogenscope.annotation.annotate import (
     score_targets,
 )
 from pathogenscope.agent import MasterAgent
+from pathogenscope.agent.chat import ChatAgent
 
 
 def main():
@@ -45,6 +46,8 @@ def main():
     parser.add_argument("--agent_top_n", type=int, default=20, help="Number of top targets for agent analysis")
     parser.add_argument("--interactive", action="store_true",
                         help="Launch interactive agent console instead of running all agents")
+    parser.add_argument("--chat", action="store_true",
+                        help="Launch Claude-powered chat interface for conversational analysis")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -108,19 +111,31 @@ def main():
 
     # --- Step 4: Agent Analysis ---
     if not args.no_agents:
-        master = MasterAgent(
-            target_scores=scored,
-            community_stats=stats,
-            annotations=annotations,
-            contact_maps=contact_maps,
-            sequences=sequences,
-            output_dir=args.output_dir,
-            config={"top_n": args.agent_top_n},
-        )
-        if args.interactive:
-            master.interactive()
+        if args.chat:
+            chat = ChatAgent(
+                target_scores=scored,
+                community_stats=stats,
+                annotations=annotations,
+                contact_maps=contact_maps,
+                sequences=sequences,
+                output_dir=args.output_dir,
+                config={"top_n": args.agent_top_n},
+            )
+            chat.start()
         else:
-            master.run_all()
+            master = MasterAgent(
+                target_scores=scored,
+                community_stats=stats,
+                annotations=annotations,
+                contact_maps=contact_maps,
+                sequences=sequences,
+                output_dir=args.output_dir,
+                config={"top_n": args.agent_top_n},
+            )
+            if args.interactive:
+                master.interactive()
+            else:
+                master.run_all()
 
     # --- Summary ---
     print("\n" + "=" * 60)

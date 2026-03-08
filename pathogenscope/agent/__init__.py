@@ -11,6 +11,7 @@ from .literature_search import LiteratureSearchAgent
 from .report import ReportGeneratorAgent
 from .llm_scoring import LLMScoringAgent
 from .orchestrator import MasterAgent
+from .chat import ChatAgent
 
 __all__ = [
     "BaseAgent",
@@ -25,4 +26,5 @@ __all__ = [
     "ReportGeneratorAgent",
     "LLMScoringAgent",
     "MasterAgent",
+    "ChatAgent",
 ]
