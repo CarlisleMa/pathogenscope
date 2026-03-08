@@ -1,0 +1,13 @@
+torch>=2.0
+transformers>=4.40
+biopython
+numpy
+pandas
+faiss-cpu
+einops
+tqdm
+matplotlib
+networkx
+python-louvain
+requests
+scikit-learn
