@@ -257,9 +257,9 @@ drug discovery. Explain tradeoffs (e.g., essential but has human homolog).
 
 ## Current pipeline state
 - {n_targets} proteins loaded in target scores
-- Community stats: {"available" if "{has_community}" == "True" else "not loaded"}
-- Annotations: {"available" if "{has_annotations}" == "True" else "not loaded"}
-- Contact maps: {"available" if "{has_contacts}" == "True" else "not available"}
+- Community stats: {community_status}
+- Annotations: {annotations_status}
+- Contact maps: {contacts_status}
 - Output directory: {output_dir}
 
 Be concise but thorough. Use scientific terminology appropriate for drug \
@@ -305,9 +305,9 @@ class ChatAgent:
         return SYSTEM_PROMPT.format(
             agent_list=agent_list,
             n_targets=len(self.master.target_scores),
-            has_community=self.master.community_stats is not None,
-            has_annotations=self.master.annotations is not None,
-            has_contacts=bool(self.master.contact_maps),
+            community_status="available" if self.master.community_stats is not None else "not loaded",
+            annotations_status="available" if self.master.annotations is not None else "not loaded",
+            contacts_status="available" if self.master.contact_maps else "not available",
             output_dir=self.master.output_dir,
         )
 
