@@ -8,6 +8,6 @@ einops
 tqdm
 matplotlib
 networkx
-python-louvain
+# community detection uses networkx built-in (no extra package needed)
 requests
 scikit-learn

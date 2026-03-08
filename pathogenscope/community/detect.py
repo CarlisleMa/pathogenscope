@@ -5,8 +5,8 @@ Takes FlashPPI predictions CSV and builds a weighted graph,
 then runs Louvain clustering to identify functional protein modules.
 """
 
-import community as community_louvain
 import networkx as nx
+from networkx.algorithms.community import louvain_communities
 import pandas as pd
 
 
@@ -26,9 +26,11 @@ def detect_communities(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     """Run Louvain community detection. Returns {protein_id: community_id}."""
     if len(G) == 0:
         return {}
-    partition = community_louvain.best_partition(
-        G, weight="weight", resolution=resolution
-    )
+    communities = louvain_communities(G, weight="weight", resolution=resolution)
+    partition = {}
+    for comm_id, members in enumerate(communities):
+        for node in members:
+            partition[node] = comm_id
     return partition
 
 
