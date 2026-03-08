@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--no_agents", action="store_true", help="Skip downstream agent analysis")
     parser.add_argument("--save_contact_maps", action="store_true", help="Save contact maps for interface analysis")
     parser.add_argument("--agent_top_n", type=int, default=20, help="Number of top targets for agent analysis")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Launch interactive agent console instead of running all agents")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -115,7 +117,10 @@ def main():
             output_dir=args.output_dir,
             config={"top_n": args.agent_top_n},
         )
-        master.run_all()
+        if args.interactive:
+            master.interactive()
+        else:
+            master.run_all()
 
     # --- Summary ---
     print("\n" + "=" * 60)

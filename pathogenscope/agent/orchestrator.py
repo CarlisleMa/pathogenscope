@@ -305,3 +305,203 @@ class MasterAgent:
         if lit and lit.status == "success":
             summary = lit.data.get("summary", {})
             print(f"  Literature: {summary.get('total_papers_found', 0)} papers found")
+
+    # ------------------------------------------------------------------
+    # Interactive console
+    # ------------------------------------------------------------------
+
+    HELP_TEXT = """
+Commands:
+  status                Show run state of all agents
+  run <agent>           Run a single agent (resolves deps automatically)
+  run all               Run all agents end-to-end
+  rerun <agent>         Force re-run an agent (clears cached result)
+  show <agent>          Print the report from a completed agent
+  data <agent>          Print the raw data dict from a completed agent
+  warnings <agent>      Print warnings from a completed agent
+  agents                List available agent names
+  deps <agent>          Show dependency chain for an agent
+  report                Generate (if needed) and print the full dossier
+  save                  Save the dossier to output_dir
+  help                  Show this help
+  quit / exit           Exit interactive mode
+
+Agent names: {agents}
+""".strip()
+
+    def interactive(self):
+        """Launch an interactive REPL for inspecting and running agents."""
+        agent_list = ", ".join(FULL_ORDER)
+        print("\n" + "=" * 60)
+        print("PATHOGENSCOPE INTERACTIVE AGENT CONSOLE")
+        print("=" * 60)
+        print(f"  Output dir : {self.output_dir}")
+        print(f"  Targets    : {len(self.target_scores)} proteins loaded")
+        print(f"  Contact maps: {'yes' if self.contact_maps else 'no'}")
+        print(f"\n  Type 'help' for commands, 'quit' to exit.\n")
+
+        self.status()
+        print()
+
+        while True:
+            try:
+                line = input("pathogenscope> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting.")
+                break
+
+            if not line:
+                continue
+
+            parts = line.split(None, 1)
+            cmd = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if cmd in ("quit", "exit", "q"):
+                print("Exiting interactive mode.")
+                break
+
+            elif cmd == "help":
+                print(self.HELP_TEXT.format(agents=agent_list))
+
+            elif cmd == "status":
+                self.status()
+
+            elif cmd == "agents":
+                print("Available agents:")
+                for name in FULL_ORDER:
+                    deps = AGENT_DEPS[name]
+                    dep_str = f" (needs: {', '.join(deps)})" if deps else ""
+                    print(f"  - {name}{dep_str}")
+
+            elif cmd == "deps":
+                self._cmd_deps(arg)
+
+            elif cmd == "run":
+                self._cmd_run(arg)
+
+            elif cmd == "rerun":
+                self._cmd_rerun(arg)
+
+            elif cmd == "show":
+                self._cmd_show(arg)
+
+            elif cmd == "data":
+                self._cmd_data(arg)
+
+            elif cmd == "warnings":
+                self._cmd_warnings(arg)
+
+            elif cmd == "report":
+                print(self.get_report())
+
+            elif cmd == "save":
+                self._cmd_save()
+
+            else:
+                print(f"Unknown command: {cmd}. Type 'help' for available commands.")
+
+    def _cmd_deps(self, arg: str):
+        if not arg or arg not in AGENT_DEPS:
+            print(f"Usage: deps <agent>  (one of: {', '.join(FULL_ORDER)})")
+            return
+        chain = self._resolve_deps(arg)
+        if chain:
+            print(f"  {arg} requires: {' -> '.join(chain)} -> {arg}")
+        else:
+            print(f"  {arg} has no dependencies.")
+
+    def _resolve_deps(self, name: str, visited: set | None = None) -> list[str]:
+        """Return the full transitive dependency chain for an agent."""
+        if visited is None:
+            visited = set()
+        chain = []
+        for dep in AGENT_DEPS.get(name, []):
+            if dep not in visited:
+                visited.add(dep)
+                chain.extend(self._resolve_deps(dep, visited))
+                chain.append(dep)
+        return chain
+
+    def _cmd_run(self, arg: str):
+        if not arg:
+            print("Usage: run <agent>  or  run all")
+            return
+        if arg == "all":
+            skip = [] if self.contact_maps else ["hotspot", "disruption"]
+            self.run_all(skip=skip)
+            return
+        if arg not in AGENT_DEPS:
+            print(f"Unknown agent: {arg}. Type 'agents' to list them.")
+            return
+        try:
+            self.run(arg)
+            print(f"  {arg}: done ({self.results[arg].status})")
+        except Exception as e:
+            print(f"  Error running {arg}: {e}")
+
+    def _cmd_rerun(self, arg: str):
+        if not arg or arg not in AGENT_DEPS:
+            print(f"Usage: rerun <agent>  (one of: {', '.join(FULL_ORDER)})")
+            return
+        try:
+            self.rerun(arg)
+            print(f"  {arg}: re-ran ({self.results[arg].status})")
+        except Exception as e:
+            print(f"  Error re-running {arg}: {e}")
+
+    def _cmd_show(self, arg: str):
+        if not arg or arg not in AGENT_DEPS:
+            print(f"Usage: show <agent>  (one of: {', '.join(FULL_ORDER)})")
+            return
+        result = self.results.get(arg)
+        if not result:
+            print(f"  {arg} has not been run yet. Use 'run {arg}' first.")
+            return
+        if result.report:
+            print(result.report)
+        else:
+            print(f"  {arg} produced no report text. Try 'data {arg}' for raw output.")
+
+    def _cmd_data(self, arg: str):
+        import json
+        if not arg or arg not in AGENT_DEPS:
+            print(f"Usage: data <agent>  (one of: {', '.join(FULL_ORDER)})")
+            return
+        result = self.results.get(arg)
+        if not result:
+            print(f"  {arg} has not been run yet. Use 'run {arg}' first.")
+            return
+        try:
+            print(json.dumps(result.data, indent=2, default=str))
+        except TypeError:
+            print(result.data)
+
+    def _cmd_warnings(self, arg: str):
+        if not arg or arg not in AGENT_DEPS:
+            print(f"Usage: warnings <agent>  (one of: {', '.join(FULL_ORDER)})")
+            return
+        result = self.results.get(arg)
+        if not result:
+            print(f"  {arg} has not been run yet.")
+            return
+        if result.warnings:
+            for w in result.warnings:
+                print(f"  - {w}")
+        else:
+            print(f"  {arg}: no warnings.")
+
+    def _cmd_save(self):
+        if "report" not in self.results:
+            print("  Generating report first...")
+            self.run("report")
+        report_result = self.results["report"]
+        path = report_result.data.get("report_path", "")
+        if path:
+            print(f"  Dossier saved to: {path}")
+        else:
+            # Fallback: write manually
+            path = os.path.join(self.output_dir, "target_dossier.md")
+            with open(path, "w") as f:
+                f.write(report_result.report)
+            print(f"  Dossier saved to: {path}")
