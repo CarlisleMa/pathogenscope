@@ -49,6 +49,7 @@ from .disruption_strategy import DisruptionStrategyAgent
 from .chemical_matter import ChemicalMatterAgent
 from .literature_search import LiteratureSearchAgent
 from .report import ReportGeneratorAgent
+from .llm_scoring import LLMScoringAgent
 
 
 # Agent dependency graph — each agent lists what must run before it
@@ -60,6 +61,10 @@ AGENT_DEPS = {
     "disruption": ["hotspot"],
     "chemical_matter": ["druggability"],
     "literature": ["community"],
+    "llm_scoring": [
+        "validation", "druggability", "community",
+        "chemical_matter", "literature",
+    ],
     "report": [
         "validation", "druggability", "community",
         "chemical_matter", "literature",
@@ -75,6 +80,7 @@ FULL_ORDER = [
     "disruption",
     "chemical_matter",
     "literature",
+    "llm_scoring",
     "report",
 ]
 
@@ -233,6 +239,17 @@ class MasterAgent:
                 annotations=self.annotations,
             )
 
+        elif name == "llm_scoring":
+            agent = LLMScoringAgent(agent_config)
+            return agent.run(
+                target_scores=self.target_scores,
+                validation=self.results.get("validation"),
+                druggability=self.results.get("druggability"),
+                community=self.results.get("community"),
+                chemical_matter=self.results.get("chemical_matter"),
+                literature=self.results.get("literature"),
+            )
+
         elif name == "report":
             agent = ReportGeneratorAgent()
             return agent.run(
@@ -244,6 +261,7 @@ class MasterAgent:
                 disruption=self.results.get("disruption"),
                 chemical_matter=self.results.get("chemical_matter"),
                 literature=self.results.get("literature"),
+                llm_scoring=self.results.get("llm_scoring"),
                 output_dir=self.output_dir,
             )
 

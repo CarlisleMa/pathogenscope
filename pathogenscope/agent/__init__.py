@@ -9,6 +9,7 @@ from .disruption_strategy import DisruptionStrategyAgent
 from .chemical_matter import ChemicalMatterAgent
 from .literature_search import LiteratureSearchAgent
 from .report import ReportGeneratorAgent
+from .llm_scoring import LLMScoringAgent
 from .orchestrator import MasterAgent
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "ChemicalMatterAgent",
     "LiteratureSearchAgent",
     "ReportGeneratorAgent",
+    "LLMScoringAgent",
     "MasterAgent",
 ]

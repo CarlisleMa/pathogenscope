@@ -28,6 +28,7 @@ class ReportGeneratorAgent(BaseAgent):
         disruption: AgentResult | None = None,
         chemical_matter: AgentResult | None = None,
         literature: AgentResult | None = None,
+        llm_scoring: AgentResult | None = None,
         output_dir: str = "results",
         **kwargs,
     ) -> AgentResult:
@@ -56,6 +57,9 @@ class ReportGeneratorAgent(BaseAgent):
 
         if literature and literature.status == "success":
             sections.append(self._literature_section(literature))
+
+        if llm_scoring and llm_scoring.status == "success":
+            sections.append(self._llm_scoring_section(llm_scoring))
 
         sections.append(self._recommendations(
             target_scores, validation, druggability, disruption,
@@ -213,6 +217,23 @@ class ReportGeneratorAgent(BaseAgent):
             f"- {summary.get('with_resistance_data', 0)} targets with resistance mechanism reports\n",
         ]
         return "\n".join(header_lines) + "\n" + literature.report
+
+    def _llm_scoring_section(self, llm_scoring: AgentResult) -> str:
+        summary = llm_scoring.data.get("summary", {})
+        recs = summary.get("recommendations", {})
+        header_lines = [
+            "## LLM Target Scoring\n",
+            f"Scored **{summary.get('total_scored', 0)}** targets using Claude. "
+            f"Mean score: **{summary.get('mean_score', 0):.2f}**, "
+            f"max: **{summary.get('max_score', 0):.2f}**.\n",
+            f"- {recs.get('prioritize', 0)} targets recommended to **prioritize**",
+            f"- {recs.get('investigate', 0)} targets recommended to **investigate**",
+            f"- {recs.get('deprioritize', 0)} targets recommended to **deprioritize**\n",
+        ]
+        top_pick = summary.get("top_pick", "")
+        if top_pick:
+            header_lines.append(f"**Top pick**: {top_pick}\n")
+        return "\n".join(header_lines) + "\n" + llm_scoring.report
 
     def _recommendations(
         self, targets: pd.DataFrame,
