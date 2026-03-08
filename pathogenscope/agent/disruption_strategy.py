@@ -15,6 +15,28 @@ import pandas as pd
 from .base import BaseAgent, AgentResult
 
 
+DRUGGABLE_DOMAINS = {
+    # keyword → (druggability, suggested inhibitor class)
+    "kinase": ("high", "kinase inhibitor"),
+    "atpase": ("high", "ATPase inhibitor"),
+    "atp-binding": ("high", "ATP-competitive inhibitor"),
+    "gtpase": ("high", "GTPase inhibitor"),
+    "protease": ("high", "protease inhibitor"),
+    "peptidase": ("high", "protease inhibitor"),
+    "gyrase": ("high", "gyrase inhibitor (e.g. fluoroquinolone)"),
+    "topoisomerase": ("high", "topoisomerase inhibitor"),
+    "polymerase": ("moderate", "polymerase inhibitor"),
+    "helicase": ("moderate", "helicase inhibitor"),
+    "transferase": ("moderate", "transferase inhibitor"),
+    "oxidoreductase": ("moderate", "redox-site inhibitor"),
+    "dehydrogenase": ("moderate", "NAD/NADP-competitive inhibitor"),
+    "synthase": ("moderate", "active-site inhibitor"),
+    "ligase": ("moderate", "substrate-competitive inhibitor"),
+    "chaperone": ("low", "allosteric modulator"),
+    "ribosom": ("low", "translation inhibitor (biologics)"),
+}
+
+
 class DisruptionStrategyAgent(BaseAgent):
     name = "disruption_strategy"
 
@@ -83,7 +105,7 @@ class DisruptionStrategyAgent(BaseAgent):
         return result
 
     def _classify_interface(self, analysis: dict) -> dict:
-        """Classify the PPI interface based on hotspot analysis."""
+        """Classify the PPI interface based on hotspot analysis and domain context."""
         stats = analysis["interface_stats"]
         patches_1 = analysis["patches_protein_1"]
         patches_2 = analysis["patches_protein_2"]
@@ -118,13 +140,60 @@ class DisruptionStrategyAgent(BaseAgent):
             itype = "flat/distributed"
             druggability = "challenging — large, flat interface"
 
+        # Domain-informed druggability adjustment
+        domains_1 = analysis.get("domains_protein_1", [])
+        domains_2 = analysis.get("domains_protein_2", [])
+        interface_domains = self._match_druggable_domains(domains_1 + domains_2)
+
+        if interface_domains:
+            best = max(interface_domains, key=lambda d: d["overlap_residues"])
+            domain_druggability = best["druggability"]
+            # Upgrade classification when a druggable domain sits at the interface
+            if domain_druggability == "high" and itype == "flat/distributed":
+                druggability = (
+                    f"moderate — flat interface BUT druggable domain at interface "
+                    f"({best['domain_name']}: {best['inhibitor_class']})"
+                )
+            elif domain_druggability == "high":
+                druggability += (
+                    f"; druggable domain at interface "
+                    f"({best['domain_name']}: {best['inhibitor_class']})"
+                )
+            elif domain_druggability == "moderate":
+                druggability += (
+                    f"; moderately druggable domain at interface ({best['domain_name']})"
+                )
+
         return {
             "type": itype,
             "druggability": druggability,
             "contact_count": n_contacts,
             "max_patch_length": max_patch_len,
             "hotspot_concentration": round(concentration, 2),
+            "interface_domains": interface_domains,
         }
+
+    def _match_druggable_domains(self, domain_mappings: list[dict]) -> list[dict]:
+        """Match interface domain mappings against known druggable domain families."""
+        matched = []
+        for dm in domain_mappings:
+            domain_name_lower = dm.get("domain_name", "").lower()
+            domain_id_lower = dm.get("domain_id", "").lower()
+            search_text = f"{domain_name_lower} {domain_id_lower}"
+            for keyword, (druggability, inhibitor_class) in DRUGGABLE_DOMAINS.items():
+                if keyword in search_text:
+                    matched.append({
+                        "domain_name": dm["domain_name"],
+                        "domain_id": dm.get("domain_id", ""),
+                        "patch_start": dm.get("patch_start", 0),
+                        "patch_end": dm.get("patch_end", 0),
+                        "overlap_residues": dm.get("overlap_residues", 0),
+                        "druggability": druggability,
+                        "inhibitor_class": inhibitor_class,
+                        "matched_keyword": keyword,
+                    })
+                    break  # one match per domain
+        return matched
 
     def _search_pdb_complex(self, acc1: str, acc2: str) -> list[dict]:
         """Search PDB for co-crystal structures of this protein pair."""
@@ -170,37 +239,89 @@ class DisruptionStrategyAgent(BaseAgent):
         """Suggest therapeutic modalities for disrupting this PPI."""
         modalities = []
         itype = interface_type["type"]
+        interface_domains = interface_type.get("interface_domains", [])
+
+        # Check if a high-druggability domain sits at the interface
+        high_domain = None
+        for d in interface_domains:
+            if d["druggability"] == "high":
+                high_domain = d
+                break
+        if high_domain is None:
+            for d in interface_domains:
+                if d["druggability"] == "moderate":
+                    high_domain = d
+                    break
 
         # Small molecule
         if itype in ("hotspot-driven", "compact"):
+            rationale = (
+                f"Compact interface ({interface_type['contact_count']} contacts) "
+                f"with clear binding pocket potential"
+            )
+            next_steps = [
+                "Virtual screening against hotspot pocket",
+                "Fragment-based screening",
+            ]
+            if high_domain:
+                rationale += (
+                    f"; hotspot overlaps {high_domain['domain_name']} — "
+                    f"{high_domain['inhibitor_class']} may compete for binding"
+                )
+                next_steps.insert(0,
+                    f"Screen {high_domain['inhibitor_class']}s targeting "
+                    f"{high_domain['domain_name']} (residues {high_domain['patch_start']}-{high_domain['patch_end']})"
+                )
             modalities.append({
                 "modality": "small molecule",
                 "confidence": "high",
-                "rationale": (
-                    f"Compact interface ({interface_type['contact_count']} contacts) "
-                    f"with clear binding pocket potential"
-                ),
-                "next_steps": [
-                    "Virtual screening against hotspot pocket",
-                    "Fragment-based screening",
-                ],
+                "rationale": rationale,
+                "next_steps": next_steps,
             })
         elif itype == "hotspot-in-large-interface":
+            rationale = "Large interface but concentrated hotspot may be targetable"
+            next_steps = [
+                "Focus on hotspot residues for pocket analysis",
+                "Allosteric site search",
+            ]
+            confidence = "moderate"
+            if high_domain and high_domain["druggability"] == "high":
+                rationale += (
+                    f"; druggable domain ({high_domain['domain_name']}) at hotspot — "
+                    f"try {high_domain['inhibitor_class']}"
+                )
+                next_steps.insert(0,
+                    f"Screen {high_domain['inhibitor_class']}s targeting "
+                    f"{high_domain['domain_name']}"
+                )
+                confidence = "high"
             modalities.append({
                 "modality": "small molecule",
-                "confidence": "moderate",
-                "rationale": "Large interface but concentrated hotspot may be targetable",
-                "next_steps": [
-                    "Focus on hotspot residues for pocket analysis",
-                    "Allosteric site search",
-                ],
+                "confidence": confidence,
+                "rationale": rationale,
+                "next_steps": next_steps,
             })
         else:
+            # flat/distributed — normally low confidence
+            rationale = "Flat/distributed interface — difficult for small molecules"
+            next_steps = ["Consider allosteric approach", "Explore other modalities"]
+            confidence = "low"
+            if high_domain and high_domain["druggability"] == "high":
+                rationale = (
+                    f"Flat interface BUT druggable domain ({high_domain['domain_name']}) "
+                    f"at interface — {high_domain['inhibitor_class']} may disrupt binding"
+                )
+                next_steps = [
+                    f"Screen {high_domain['inhibitor_class']}s targeting "
+                    f"{high_domain['domain_name']} (residues {high_domain['patch_start']}-{high_domain['patch_end']})",
+                    "Allosteric site search near domain boundary",
+                ]
+                confidence = "moderate"
             modalities.append({
                 "modality": "small molecule",
-                "confidence": "low",
-                "rationale": "Flat/distributed interface — difficult for small molecules",
-                "next_steps": ["Consider allosteric approach", "Explore other modalities"],
+                "confidence": confidence,
+                "rationale": rationale,
+                "next_steps": next_steps,
             })
 
         # Peptide mimetic
@@ -208,15 +329,23 @@ class DisruptionStrategyAgent(BaseAgent):
         linear_patches = [p for p in patches if p["length"] <= 20]
         if linear_patches:
             best_patch = max(linear_patches, key=lambda p: p["max_contact"])
+            # Check if the best patch overlaps a known domain
+            patch_domain_note = ""
+            for d in interface_domains:
+                if (d["patch_start"] <= best_patch["end"] and
+                        d["patch_end"] >= best_patch["start"]):
+                    patch_domain_note = f" (within {d['domain_name']})"
+                    break
             modalities.append({
                 "modality": "peptide mimetic",
                 "confidence": "moderate" if best_patch["length"] <= 12 else "low",
                 "rationale": (
                     f"Linear interface patch ({best_patch['length']} residues, "
-                    f"contact={best_patch['max_contact']}) suitable for peptide design"
+                    f"contact={best_patch['max_contact']}){patch_domain_note} "
+                    f"suitable for peptide design"
                 ),
                 "next_steps": [
-                    f"Design stapled peptide spanning residues {best_patch['start']}-{best_patch['end']}",
+                    f"Design stapled peptide spanning residues {best_patch['start']}-{best_patch['end']}{patch_domain_note}",
                     "Test cyclized variants for stability",
                 ],
             })
@@ -267,6 +396,18 @@ class DisruptionStrategyAgent(BaseAgent):
             itype = s["interface_type"]
             lines.append(f"  Interface: {itype['type']} ({itype['contact_count']} contacts)")
             lines.append(f"  Assessment: {itype['druggability']}")
+
+            # Surface domain context from InterfaceHotspotAgent
+            interface_domains = itype.get("interface_domains", [])
+            if interface_domains:
+                lines.append("  Domains at interface:")
+                for d in interface_domains:
+                    lines.append(
+                        f"    {d['domain_name']} ({d['domain_id']}) — "
+                        f"{d['overlap_residues']} residues at interface, "
+                        f"druggability: {d['druggability']}, "
+                        f"suggested: {d['inhibitor_class']}"
+                    )
 
             if s["pdb_structures"]:
                 pdbs = ", ".join(p["pdb_id"] for p in s["pdb_structures"][:5])
