@@ -34,6 +34,8 @@ from pathogenscope.agent import (
     CommunityInterpretationAgent,
     InterfaceHotspotAgent,
     DisruptionStrategyAgent,
+    ChemicalMatterAgent,
+    LiteratureSearchAgent,
     ReportGeneratorAgent,
 )
 
@@ -156,7 +158,26 @@ def main():
             print("\n  Skipping interface/disruption analysis (no contact maps)")
             print("  Re-run with --save_contact_maps to enable")
 
-        # 4f. Generate Report
+        # 4f. Chemical Matter Search
+        print("\n--- Chemical Matter Search ---")
+        chem_agent = ChemicalMatterAgent(agent_config)
+        chem_result = chem_agent.run(
+            target_scores=scored, druggability=drug_result
+        )
+        print(f"  -> {chem_result.data.get('summary', {})}")
+
+        # 4g. Literature & Perturbation Strategy Search
+        print("\n--- Literature & Perturbation Search ---")
+        lit_agent = LiteratureSearchAgent(agent_config)
+        lit_result = lit_agent.run(
+            target_scores=scored,
+            community=comm_result,
+            disruption=disruption_result,
+            annotations=annotations,
+        )
+        print(f"  -> {lit_result.data.get('summary', {})}")
+
+        # 4h. Generate Report
         print("\n--- Generating Target Dossier ---")
         report_agent = ReportGeneratorAgent()
         report_result = report_agent.run(
@@ -166,6 +187,8 @@ def main():
             community=comm_result,
             hotspot=hotspot_result,
             disruption=disruption_result,
+            chemical_matter=chem_result,
+            literature=lit_result,
             output_dir=args.output_dir,
         )
 

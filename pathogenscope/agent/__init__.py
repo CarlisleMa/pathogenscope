@@ -6,6 +6,8 @@ from .druggability import DruggabilityAgent
 from .community_interpretation import CommunityInterpretationAgent
 from .interface_hotspot import InterfaceHotspotAgent
 from .disruption_strategy import DisruptionStrategyAgent
+from .chemical_matter import ChemicalMatterAgent
+from .literature_search import LiteratureSearchAgent
 from .report import ReportGeneratorAgent
 
 __all__ = [
@@ -16,5 +18,7 @@ __all__ = [
     "CommunityInterpretationAgent",
     "InterfaceHotspotAgent",
     "DisruptionStrategyAgent",
+    "ChemicalMatterAgent",
+    "LiteratureSearchAgent",
     "ReportGeneratorAgent",
 ]

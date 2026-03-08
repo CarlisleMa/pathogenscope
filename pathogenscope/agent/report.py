@@ -26,6 +26,8 @@ class ReportGeneratorAgent(BaseAgent):
         community: AgentResult | None = None,
         hotspot: AgentResult | None = None,
         disruption: AgentResult | None = None,
+        chemical_matter: AgentResult | None = None,
+        literature: AgentResult | None = None,
         output_dir: str = "results",
         **kwargs,
     ) -> AgentResult:
@@ -49,8 +51,15 @@ class ReportGeneratorAgent(BaseAgent):
         if disruption and disruption.status != "error":
             sections.append(self._strategy_section(disruption))
 
+        if chemical_matter and chemical_matter.status == "success":
+            sections.append(self._chemical_matter_section(chemical_matter))
+
+        if literature and literature.status == "success":
+            sections.append(self._literature_section(literature))
+
         sections.append(self._recommendations(
-            target_scores, validation, druggability, disruption
+            target_scores, validation, druggability, disruption,
+            chemical_matter, literature
         ))
         sections.append(self._methods())
 
@@ -177,15 +186,45 @@ class ReportGeneratorAgent(BaseAgent):
     def _strategy_section(self, disruption: AgentResult) -> str:
         return "## Disruption Strategies\n\n" + disruption.report
 
+    def _chemical_matter_section(self, chemical_matter: AgentResult) -> str:
+        summary = chemical_matter.data.get("summary", {})
+        header_lines = [
+            "## Chemical Matter\n",
+            f"**{summary.get('total_direct_compounds', 0)}** compounds found across "
+            f"**{summary.get('total_assessed', 0)}** targets. "
+            f"**{summary.get('with_clinical_compounds', 0)}** targets have clinical-stage compounds.\n",
+        ]
+        breakdown = summary.get("tractability_breakdown", {})
+        if breakdown:
+            header_lines.append("Tractability breakdown:")
+            for level, count in sorted(breakdown.items()):
+                header_lines.append(f"  - {level}: {count} targets")
+            header_lines.append("")
+        return "\n".join(header_lines) + "\n" + chemical_matter.report
+
+    def _literature_section(self, literature: AgentResult) -> str:
+        summary = literature.data.get("summary", {})
+        header_lines = [
+            "## Literature & Prior Perturbation Strategies\n",
+            f"Searched **{summary.get('targets_searched', 0)}** targets across PubMed. "
+            f"**{summary.get('total_papers_found', 0)}** relevant papers found.\n",
+            f"- {summary.get('with_inhibitor_literature', 0)} targets with inhibitor studies",
+            f"- {summary.get('with_genetic_evidence', 0)} targets with genetic perturbation data",
+            f"- {summary.get('with_resistance_data', 0)} targets with resistance mechanism reports\n",
+        ]
+        return "\n".join(header_lines) + "\n" + literature.report
+
     def _recommendations(
         self, targets: pd.DataFrame,
         validation: AgentResult | None,
         druggability: AgentResult | None,
         disruption: AgentResult | None,
+        chemical_matter: AgentResult | None = None,
+        literature: AgentResult | None = None,
     ) -> str:
         lines = ["## Prioritized Recommendations\n"]
 
-        # Find best candidates: high target score + druggable + essential + low off-target
+        # Index all agent results by protein_id
         val_map = {}
         if validation and validation.status == "success":
             for v in validation.data.get("validations", []):
@@ -195,6 +234,16 @@ class ReportGeneratorAgent(BaseAgent):
         if druggability and druggability.status == "success":
             for a in druggability.data.get("assessments", []):
                 drug_map[a["protein_id"]] = a
+
+        chem_map = {}
+        if chemical_matter and chemical_matter.status == "success":
+            for a in chemical_matter.data.get("assessments", []):
+                chem_map[a["protein_id"]] = a
+
+        lit_map = {}
+        if literature and literature.status == "success":
+            for a in literature.data.get("assessments", []):
+                lit_map[a["protein_id"]] = a
 
         recommendations = []
         for _, row in targets.head(20).iterrows():
@@ -217,6 +266,27 @@ class ReportGeneratorAgent(BaseAgent):
                 elif "Tier 2" in d["druggability_tier"]:
                     rec_score += 0.1
 
+            # Boost for existing chemical matter
+            if pid in chem_map:
+                tract = chem_map[pid]["tractability"]["level"]
+                if tract == "clinical":
+                    rec_score += 0.15
+                elif tract == "chemical_probe":
+                    rec_score += 0.1
+                elif tract == "hit_matter":
+                    rec_score += 0.05
+
+            # Boost for literature-backed essentiality/inhibitor evidence
+            if pid in lit_map:
+                findings = lit_map[pid]["findings"]
+                if findings.get("known_inhibitors"):
+                    rec_score += 0.05
+                if findings.get("essential_evidence"):
+                    rec_score += 0.05
+                # Penalty for known resistance — harder to develop
+                if len(findings.get("resistance_mechanisms", [])) >= 3:
+                    rec_score -= 0.1
+
             recommendations.append((pid, rec_score))
 
         recommendations.sort(key=lambda x: x[1], reverse=True)
@@ -231,6 +301,12 @@ class ReportGeneratorAgent(BaseAgent):
                 reasons.append("highly druggable")
             if pid in val_map and "low" in val_map[pid]["off_target_risk"]:
                 reasons.append("low off-target risk")
+            if pid in chem_map:
+                tract = chem_map[pid]["tractability"]["level"]
+                if tract in ("clinical", "chemical_probe"):
+                    reasons.append(f"chemical matter: {tract}")
+            if pid in lit_map and lit_map[pid]["findings"].get("known_inhibitors"):
+                reasons.append("prior inhibitor studies")
 
             reason_str = f" ({', '.join(reasons)})" if reasons else ""
             lines.append(f"{i}. **{name}** — priority score={score:.3f}{reason_str}")
@@ -240,7 +316,8 @@ class ReportGeneratorAgent(BaseAgent):
         lines.append("2. Validate top targets against SeqHub results")
         lines.append("3. Obtain AlphaFold structures for top 5 targets")
         lines.append("4. Run molecular docking on druggable interface pockets")
-        lines.append("5. Cross-reference with literature for existing inhibitors")
+        lines.append("5. Retrieve and cluster ChEMBL hit compounds for SAR analysis")
+        lines.append("6. Review PubMed literature for resistance liability of top picks")
 
         return "\n".join(lines)
 
@@ -257,5 +334,9 @@ class ReportGeneratorAgent(BaseAgent):
             "**Druggability**: AlphaFold structure availability, protein family classification, "
             "known binding sites, subcellular accessibility.\n\n"
             "**Interface Analysis**: FlashPPI contact maps — hotspot identification, "
-            "patch extraction, domain mapping via UniProt/Pfam."
+            "patch extraction, domain mapping via UniProt/Pfam.\n\n"
+            "**Chemical Matter**: ChEMBL database search for bioactive compounds — "
+            "direct target hits, protein family analogues, clinical pipeline compounds.\n\n"
+            "**Literature Search**: PubMed (NCBI E-utilities) — inhibitor studies, "
+            "genetic perturbation experiments, resistance mechanisms, pathway-level evidence."
         )
