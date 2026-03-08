@@ -28,16 +28,7 @@ from pathogenscope.annotation.annotate import (
     fetch_uniprot_batch,
     score_targets,
 )
-from pathogenscope.agent import (
-    TargetValidationAgent,
-    DruggabilityAgent,
-    CommunityInterpretationAgent,
-    InterfaceHotspotAgent,
-    DisruptionStrategyAgent,
-    ChemicalMatterAgent,
-    LiteratureSearchAgent,
-    ReportGeneratorAgent,
-)
+from pathogenscope.agent import MasterAgent
 
 
 def main():
@@ -115,82 +106,16 @@ def main():
 
     # --- Step 4: Agent Analysis ---
     if not args.no_agents:
-        print("\n" + "=" * 60)
-        print("STEP 4: Downstream Agent Analysis")
-        print("=" * 60)
-
-        agent_config = {"top_n": args.agent_top_n}
-
-        # 4a. Target Validation
-        print("\n--- Target Validation ---")
-        tv_agent = TargetValidationAgent(agent_config)
-        tv_result = tv_agent.run(target_scores=scored, annotations=annotations)
-        print(f"  -> {tv_result.data.get('summary', {})}")
-
-        # 4b. Druggability Assessment
-        print("\n--- Druggability Assessment ---")
-        drug_agent = DruggabilityAgent(agent_config)
-        drug_result = drug_agent.run(target_scores=scored, annotations=annotations)
-        print(f"  -> {drug_result.data.get('summary', {})}")
-
-        # 4c. Community Interpretation
-        print("\n--- Community Interpretation ---")
-        comm_agent = CommunityInterpretationAgent()
-        comm_result = comm_agent.run(community_stats=stats, annotations=annotations)
-
-        # 4d. Interface Hotspot (only if contact maps available)
-        hotspot_result = None
-        disruption_result = None
-        if contact_maps:
-            print("\n--- Interface Hotspot Analysis ---")
-            hs_agent = InterfaceHotspotAgent()
-            hotspot_result = hs_agent.run(
-                contact_maps=contact_maps, sequences=sequences, annotations=annotations
-            )
-
-            # 4e. Disruption Strategy (needs hotspot results)
-            print("\n--- Disruption Strategy ---")
-            ds_agent = DisruptionStrategyAgent()
-            disruption_result = ds_agent.run(
-                hotspot_results=hotspot_result, target_scores=scored
-            )
-        else:
-            print("\n  Skipping interface/disruption analysis (no contact maps)")
-            print("  Re-run with --save_contact_maps to enable")
-
-        # 4f. Chemical Matter Search
-        print("\n--- Chemical Matter Search ---")
-        chem_agent = ChemicalMatterAgent(agent_config)
-        chem_result = chem_agent.run(
-            target_scores=scored, druggability=drug_result
-        )
-        print(f"  -> {chem_result.data.get('summary', {})}")
-
-        # 4g. Literature & Perturbation Strategy Search
-        print("\n--- Literature & Perturbation Search ---")
-        lit_agent = LiteratureSearchAgent(agent_config)
-        lit_result = lit_agent.run(
+        master = MasterAgent(
             target_scores=scored,
-            community=comm_result,
-            disruption=disruption_result,
+            community_stats=stats,
             annotations=annotations,
-        )
-        print(f"  -> {lit_result.data.get('summary', {})}")
-
-        # 4h. Generate Report
-        print("\n--- Generating Target Dossier ---")
-        report_agent = ReportGeneratorAgent()
-        report_result = report_agent.run(
-            target_scores=scored,
-            validation=tv_result,
-            druggability=drug_result,
-            community=comm_result,
-            hotspot=hotspot_result,
-            disruption=disruption_result,
-            chemical_matter=chem_result,
-            literature=lit_result,
+            contact_maps=contact_maps,
+            sequences=sequences,
             output_dir=args.output_dir,
+            config={"top_n": args.agent_top_n},
         )
+        master.run_all()
 
     # --- Summary ---
     print("\n" + "=" * 60)
