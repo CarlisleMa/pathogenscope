@@ -247,6 +247,8 @@ st.divider()
 
 st.markdown("## Results")
 
+st.link_button("Open Interactive Network Dashboard", "http://localhost:5173/", type="primary")
+
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Proteins in", f"{len(targets):,}")
 c2.metric("Structural mimics", f"{mimicry['query_uniprot'].nunique():,}", help="Pathogen proteins with similar 3D fold to a human protein")
@@ -413,24 +415,47 @@ def load_hotspots():
         lookup.setdefault(acc2, []).append(entry)
     return lookup
 
+st.divider()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PPI INTERACTION HOTSPOTS — independent section
+# ═══════════════════════════════════════════════════════════════════════════
+
+st.markdown("## PPI Interaction Hotspots")
+st.markdown("FlashPPI predicts residue-level contact maps for each protein-protein interaction. "
+            "Hotspot residues — where two proteins physically touch — are colored by predicted interaction probability.")
+
 hotspot_lookup = load_hotspots()
-pathogen_hotspots = hotspot_lookup.get(pathogen_acc, [])
 
-if pathogen_hotspots:
-    st.markdown("### Predicted PPI Interaction Hotspots (FlashPPI)")
-    st.markdown(f"Residues colored by predicted interaction importance from FlashPPI contact maps. "
-                f"**{len(pathogen_hotspots)}** predicted interaction(s) for this protein.")
+# Build list of all interactions sorted by score
+all_interactions = []
+seen = set()
+for analyses in hotspot_lookup.values():
+    for h in analyses:
+        pair_key = tuple(sorted([h["protein_1"], h["protein_2"]]))
+        if pair_key not in seen:
+            seen.add(pair_key)
+            all_interactions.append(h)
+all_interactions.sort(key=lambda x: -x["contact_score"])
 
-    # Let user pick which interaction to visualize
+if all_interactions:
+    st.markdown(f"**{len(all_interactions)}** predicted protein-protein interactions with contact maps.")
+
+    # Dropdown to pick interaction
     interaction_options = {
         f"{h['protein_1']} ↔ {h['protein_2']} (score={h['contact_score']:.3f})": i
-        for i, h in enumerate(sorted(pathogen_hotspots, key=lambda x: -x["contact_score"]))
+        for i, h in enumerate(all_interactions[:100])  # top 100
     }
-    sel_interaction = st.selectbox("Select interaction:", list(interaction_options.keys()), key="hotspot_sel")
-    sel_h = sorted(pathogen_hotspots, key=lambda x: -x["contact_score"])[interaction_options[sel_interaction]]
+    sel_interaction = st.selectbox("Select an interaction to visualize:", list(interaction_options.keys()), key="hotspot_section")
+    sel_h = all_interactions[interaction_options[sel_interaction]]
 
-    # Build per-residue importance for both proteins
-    # Aggregate: for each residue, take max contact_prob across all hotspot pairs
+    hs_met1, hs_met2, hs_met3 = st.columns(3)
+    hs_met1.metric("Contact Score", f"{sel_h['contact_score']:.3f}")
+    hs_met2.metric("Hotspot Residues", f"{len(sel_h['hotspots'])}")
+    top_prob = max(hs["contact_prob"] for hs in sel_h["hotspots"]) if sel_h["hotspots"] else 0
+    hs_met3.metric("Top Contact Prob", f"{top_prob:.3f}")
+
+    # Build per-residue importance
     residue_scores_1 = {}
     residue_scores_2 = {}
     for hs in sel_h["hotspots"]:
@@ -467,11 +492,8 @@ if pathogen_hotspots:
             if cif_data and scores:
                 viewer = py3Dmol.view(width="100%", height=400)
                 viewer.addModel(cif_data, "cif")
-                # Base style: light gray cartoon
                 viewer.setStyle({"model": 0}, {"cartoon": {"color": "#d3d3d3"}})
-                # Color hotspot residues by importance (white -> red gradient)
                 for resi, prob in scores.items():
-                    # Map probability to red intensity: 0 = white, 1 = bright red
                     r = 255
                     g = int(255 * (1 - prob))
                     b = int(255 * (1 - prob))
@@ -482,7 +504,7 @@ if pathogen_hotspots:
                     )
                 viewer.zoomTo()
                 showmol(viewer, height=400)
-                st.caption(f"{len(scores)} hotspot residues | Top contact prob: {max(scores.values()):.3f}")
+                st.caption(f"{len(scores)} hotspot residues | Top prob: {max(scores.values()):.3f}")
             elif cif_data:
                 viewer = py3Dmol.view(width="100%", height=400)
                 viewer.addModel(cif_data, "cif")
@@ -492,7 +514,7 @@ if pathogen_hotspots:
             else:
                 st.info(f"Could not load structure for {acc}")
 
-    st.caption("Gray = non-interacting residues | Red intensity = predicted interaction probability from FlashPPI contact maps")
+    st.caption("**Gray** = non-interacting residues | **Red intensity** = predicted contact probability from FlashPPI")
 
 st.divider()
 
