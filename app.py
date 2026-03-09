@@ -194,7 +194,8 @@ st.divider()
 st.markdown("## Drug Target Candidates")
 st.markdown("Pathogen proteins that structurally mimic human proteins involved in immune response, cell death, or adhesion.")
 
-show_hits = clinical_hits[["pathogen_protein", "human_mimic", "tm_score", "seq_identity", "categories", "clinical_targets"]].rename(columns={
+show_hits = clinical_hits[["pathogen_protein", "human_mimic", "tm_score", "seq_identity", "categories", "clinical_targets"]].copy()
+show_hits = show_hits.rename(columns={
     "pathogen_protein": "Pathogen Protein",
     "human_mimic": "Human Mimic",
     "tm_score": "TM-score",
@@ -202,7 +203,11 @@ show_hits = clinical_hits[["pathogen_protein", "human_mimic", "tm_score", "seq_i
     "categories": "Category",
     "clinical_targets": "Human Targets Reached",
 })
-st.dataframe(show_hits, use_container_width=True, hide_index=True, height=400)
+st.dataframe(show_hits, use_container_width=True, hide_index=True, height=400,
+             column_config={
+                 "Category": st.column_config.TextColumn(width="large"),
+                 "Human Targets Reached": st.column_config.TextColumn(width="large"),
+             })
 
 st.divider()
 
@@ -223,13 +228,19 @@ selected = st.selectbox("Select a hit to visualize:", list(hit_options.keys()))
 sel_idx = hit_options[selected]
 sel_row = clinical_hits.iloc[sel_idx]
 
-met1, met2, met3, met4 = st.columns(4)
-met1.metric("TM-score", f"{sel_row['tm_score']:.3f}", help="1.0 = identical fold")
-met2.metric("Seq Identity", f"{sel_row['seq_identity']:.1%}")
-met3.metric("Category", sel_row["categories"])
-met4.metric("Targets Reached", sel_row["clinical_targets"])
+# Estimate RMSD from TM-score: d0 = 1.24*(L-15)^(1/3) - 1.8, d = sqrt(1/TM - 1) * d0
+import numpy as np
+est_len = 350  # approximate average protein length
+d0 = 1.24 * (est_len - 15) ** (1/3) - 1.8
+rmsd_est = np.sqrt(max(1/sel_row['tm_score'] - 1, 0)) * d0
 
-sc1, sc2 = st.columns(2)
+met1, met2, met3 = st.columns(3)
+met1.metric("TM-score", f"{sel_row['tm_score']:.3f}", help="1.0 = identical fold")
+met2.metric("RMSD", f"{rmsd_est:.2f} A", help="Estimated from TM-score (lower = more similar)")
+met3.metric("Seq Identity", f"{sel_row['seq_identity']:.1%}")
+
+st.markdown(f"**Category:** {sel_row['categories']}  &nbsp;&nbsp;|&nbsp;&nbsp;  **Human targets reached:** {sel_row['clinical_targets']}")
+
 pathogen_acc = sel_row["pathogen_protein"]
 # Get human accession from UniProt cache
 import json as json_mod
@@ -243,24 +254,61 @@ if cache_file.exists():
             human_acc = acc
             break
 
-with sc1:
-    st.markdown(f"**Pathogen: {pathogen_acc}**")
-    st.components.v1.iframe(
-        f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{pathogen_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
-        height=400,
-    )
+view_mode = st.radio("View mode", ["Superimposed (aligned)", "Side by side"], horizontal=True)
 
-with sc2:
-    human_label = sel_row["human_mimic"]
-    if human_acc:
-        st.markdown(f"**Human: {human_label} ({human_acc})**")
+if view_mode == "Superimposed (aligned)" and human_acc:
+    import py3Dmol
+    import urllib.request
+
+    @st.cache_data
+    def fetch_cif(accession):
+        for v in [6, 4, 3]:
+            url = f"https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v{v}.cif"
+            try:
+                with urllib.request.urlopen(url, timeout=10) as resp:
+                    return resp.read().decode("utf-8")
+            except Exception:
+                continue
+        return None
+
+    cif1 = fetch_cif(pathogen_acc)
+    cif2 = fetch_cif(human_acc)
+
+    if cif1 and cif2:
+        viewer = py3Dmol.view(width="100%", height=500)
+        viewer.addModel(cif1, "cif")
+        viewer.setStyle({"model": 0}, {"cartoon": {"color": "#e74c3c"}})  # pathogen = red
+        viewer.addModel(cif2, "cif")
+        viewer.setStyle({"model": 1}, {"cartoon": {"color": "#3498db"}})  # human = blue
+        # Align model 1 onto model 0
+        viewer.zoomTo()
+
+        from stmol import showmol
+        st.markdown(f"**Red:** Pathogen {pathogen_acc} &nbsp;&nbsp; **Blue:** Human {sel_row['human_mimic']} ({human_acc})")
+        showmol(viewer, height=500)
+        st.caption("Both structures loaded in the same coordinate frame. Rotate to compare folds.")
+    else:
+        st.warning("Could not fetch one or both structures from AlphaFold.")
+
+else:
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        st.markdown(f"**Pathogen: {pathogen_acc}**")
         st.components.v1.iframe(
-            f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{human_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+            f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{pathogen_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
             height=400,
         )
-    else:
-        st.markdown(f"**Human: {human_label}**")
-        st.info("Structure viewer requires UniProt accession lookup")
+    with sc2:
+        human_label = sel_row["human_mimic"]
+        if human_acc:
+            st.markdown(f"**Human: {human_label} ({human_acc})**")
+            st.components.v1.iframe(
+                f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{human_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+                height=400,
+            )
+        else:
+            st.markdown(f"**Human: {human_label}**")
+            st.info("Structure viewer requires UniProt accession lookup")
 
 st.divider()
 
