@@ -88,19 +88,121 @@ clinical_hits = compute_clinical_hits()
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.markdown("# PathogenScope")
-st.markdown("### From pathogen genome to drug targets in 30 minutes.")
+st.markdown("### Automated drug target discovery from pathogen genomes")
+
+st.divider()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE PROBLEM
+# ═══════════════════════════════════════════════════════════════════════════
+
+st.markdown("## The Problem")
+
+prob1, prob2 = st.columns([2, 1])
+with prob1:
+    st.markdown("""
+    Antimicrobial resistance (AMR) kills **1.27 million people per year** — more than HIV or malaria.
+    The WHO lists *Acinetobacter baumannii* as its **#1 critical priority** pathogen: pan-drug resistant
+    strains cause hospital-acquired infections with **>50% ICU mortality**, and there are
+    **no new antibiotics** in late-stage development.
+
+    Finding new drug targets traditionally requires **years of wet-lab work** — gene knockouts,
+    infection models, structural studies. By the time a target is validated, resistance has already
+    spread to the next strain.
+
+    **We need a way to computationally identify drug targets from a pathogen genome in hours, not years.**
+    """)
+
+with prob2:
+    st.markdown("")
+    st.metric("AMR deaths/year", "1.27M")
+    st.metric("ICU mortality", ">50%")
+    st.metric("New antibiotics", "0", help="No new classes in late-stage development for A. baumannii")
+
+st.divider()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OUR APPROACH
+# ═══════════════════════════════════════════════════════════════════════════
+
+st.markdown("## Our Approach")
 
 st.markdown("""
-Upload any bacterial proteome. We find which pathogen proteins structurally
-mimic human proteins, map the pathogen's internal network, and identify
-which human pathways are being hijacked — giving you a ranked list of
-drug target candidates backed by structural and network evidence.
+PathogenScope takes a pathogen proteome and asks three questions simultaneously:
+""")
+
+q1, q2, q3 = st.columns(3)
+
+with q1:
+    st.markdown("""
+    #### Which pathogen proteins look like human proteins?
+
+    **Structural mimicry** is how pathogens hijack host pathways — they evolve
+    protein folds that mimic ours to trick our cells. We use **Foldseek** to compare
+    every pathogen protein's 3D structure against the entire human proteome.
+    """)
+
+with q2:
+    st.markdown("""
+    #### Which pathogen proteins are essential?
+
+    **Hub proteins** in the pathogen's own interaction network are critical for survival.
+    Knock out a hub, and the pathogen's internal machinery collapses. We use **FlashPPI**
+    on GPUs to predict all intra-pathogen protein interactions and find the hubs.
+    """)
+
+with q3:
+    st.markdown("""
+    #### Which human pathways are being targeted?
+
+    For each structural mimic, we trace through the **STRING** protein interaction network
+    to map exactly which human biological pathways the pathogen is hijacking —
+    immune signaling, apoptosis, adhesion, and more.
+    """)
+
+st.divider()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════
+
+st.markdown("## Pipeline")
+
+st.markdown("""
+```
+Pathogen Proteome (FASTA)
+        |
+        v
+ ┌──────────────────┐     ┌──────────────────┐
+ │  AlphaFold DB     │     │  FlashPPI (GPU)   │
+ │  3D structures    │     │  All-vs-all PPI   │
+ └────────┬─────────┘     └────────┬─────────┘
+          |                        |
+          v                        v
+ ┌──────────────────┐     ┌──────────────────┐
+ │  Foldseek         │     │  Network analysis │
+ │  vs human proteome│     │  Hub proteins     │
+ └────────┬─────────┘     └────────┬─────────┘
+          |                        |
+          v                        v
+ ┌──────────────────┐     ┌──────────────────┐
+ │  STRING DB        │     │  Convergence      │
+ │  Pathway mapping  │     │  Mimicry + Hub    │
+ └────────┬─────────┘     └────────┬─────────┘
+          |                        |
+          └───────────┬────────────┘
+                      v
+            ┌──────────────────┐
+            │  Ranked Drug     │
+            │  Target List     │
+            └──────────────────┘
+```
 """)
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DEMO ORGANISM
+# DEMO
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.markdown("## Demo: *Acinetobacter baumannii*")
@@ -111,22 +213,24 @@ with col_up:
     if uploaded:
         st.success(f"Uploaded: {uploaded.name}")
     else:
-        st.caption("Using demo organism")
+        st.caption("Using demo: A. baumannii (3,661 proteins)")
 
 with col_why:
     st.markdown("""
-    WHO's **#1 critical priority** pathogen. Pan-drug resistant strains cause hospital-acquired
-    pneumonia and bloodstream infections with **>50% mortality** in ICU outbreaks.
-    No new antibiotics in development. We need new drug targets.
+    **Demo organism:** *Acinetobacter baumannii* (WHO critical priority #1)
+
+    - **3,661 proteins** in reference proteome
+    - **3,646 AlphaFold structures** downloaded
+    - Pipeline runtime: **~30 minutes** on a single GPU node
     """)
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PIPELINE + RESULTS (combined — show what we DID and what we FOUND)
+# RESULTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.markdown("## Pipeline Results")
+st.markdown("## Results")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Proteins in", f"{len(targets):,}")
