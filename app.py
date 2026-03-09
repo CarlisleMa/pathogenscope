@@ -9,20 +9,14 @@ from pathlib import Path
 
 RESULTS = Path("results")
 
-st.set_page_config(
-    page_title="PathogenScope",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="PathogenScope", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
     [data-testid="stAppViewContainer"] { background-color: #ffffff; }
     [data-testid="stHeader"] { background-color: #ffffff; }
-    .block-container { padding-top: 2rem; }
+    .block-container { padding-top: 2rem; max-width: 1200px; }
     .stMetric { background-color: #f8f9fa; padding: 16px; border-radius: 12px; border: 1px solid #e9ecef; }
-    .step-box { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; border-radius: 12px; margin: 8px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,210 +33,234 @@ def load_data():
 merged, network, mimicry, hubs = load_data()
 targets = pd.DataFrame(merged["targets"])
 
+# Precompute: which mimicry hits reach clinically relevant human targets?
+CLINICAL_TARGETS = {
+    "Innate immune": {"TLR2", "TLR4", "TLR1", "TLR6"},
+    "Apoptosis": {"CASP3", "CASP8", "CASP9", "BAX", "BCL2", "BAK1"},
+    "Chaperone/stress": {"HSPD1", "HSPA1A", "DNAJA1", "DNAJB1"},
+    "Adhesion/ECM": {"FN1", "COL4A1", "COL4A2", "LAMA1"},
+    "Drug efflux": {"ABCB1", "ABCG2"},
+    "Inflammation": {"NFKB1", "PLA2G4A", "PLCG1"},
+}
+all_clinical = set()
+for v in CLINICAL_TARGETS.values():
+    all_clinical.update(v)
+
+
+@st.cache_data
+def compute_clinical_hits():
+    rows = []
+    for _, row in mimicry.iterrows():
+        target = str(row.get("target_gene", ""))
+        partners = str(row.get("string_partners", ""))
+        reachable = set()
+        if target and target != "nan":
+            reachable.add(target)
+        if partners and partners != "nan":
+            for p in partners.split(";"):
+                p = p.strip()
+                if p:
+                    reachable.add(p)
+        found = reachable & all_clinical
+        if found:
+            # Categorize
+            cats = []
+            for cat, genes in CLINICAL_TARGETS.items():
+                if found & genes:
+                    cats.append(cat)
+            rows.append({
+                "pathogen_protein": row["query_uniprot"],
+                "human_mimic": target,
+                "tm_score": row["alntmscore"],
+                "seq_identity": row["fident"],
+                "clinical_targets": ", ".join(sorted(found)),
+                "categories": ", ".join(cats),
+                "n_targets": len(found),
+            })
+    return pd.DataFrame(rows).sort_values("tm_score", ascending=False).drop_duplicates("pathogen_protein")
+
+
+clinical_hits = compute_clinical_hits()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 1: LANDING
+# HERO
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.markdown("# PathogenScope")
-st.markdown("#### From pathogen genome to drug targets in minutes.")
-st.markdown("")
+st.markdown("### From pathogen genome to drug targets in 30 minutes.")
 
 st.markdown("""
-> You have a dangerous pathogen. You need to find its weak points — proteins you can drug
-> to stop it from infecting humans. Traditional approaches take months of wet-lab work.
-> **PathogenScope does it computationally in under an hour.**
+Upload any bacterial proteome. We find which pathogen proteins structurally
+mimic human proteins, map the pathogen's internal network, and identify
+which human pathways are being hijacked — giving you a ranked list of
+drug target candidates backed by structural and network evidence.
 """)
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# INPUT SECTION
+# DEMO ORGANISM
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.markdown("## Step 1: Upload a Pathogen Genome")
+st.markdown("## Demo: *Acinetobacter baumannii*")
 
-col_input, col_info = st.columns([2, 1])
-with col_input:
-    uploaded = st.file_uploader(
-        "Upload proteome FASTA (or we'll use our demo organism)",
-        type=["fasta", "fa", "faa"],
-        help="Protein sequences in FASTA format. We'll predict structures and find drug targets.",
-    )
+col_up, col_why = st.columns([1, 2])
+with col_up:
+    uploaded = st.file_uploader("Upload proteome FASTA", type=["fasta", "fa", "faa"])
     if uploaded:
         st.success(f"Uploaded: {uploaded.name}")
     else:
-        st.info("**Demo mode**: Using *Acinetobacter baumannii* — WHO's #1 critical priority superbug. Causes untreatable hospital infections with >50% mortality in ICU outbreaks.")
+        st.caption("Using demo organism")
 
-with col_info:
-    st.markdown("**What we need:**")
-    st.markdown("- Protein FASTA file")
-    st.markdown("- That's it.")
-    st.markdown("")
-    st.markdown("**What we do:**")
-    st.markdown("- Predict 3D structures (AlphaFold)")
-    st.markdown("- Find human protein mimics")
-    st.markdown("- Map pathogen's own network")
-    st.markdown("- Identify drug targets")
+with col_why:
+    st.markdown("""
+    WHO's **#1 critical priority** pathogen. Pan-drug resistant strains cause hospital-acquired
+    pneumonia and bloodstream infections with **>50% mortality** in ICU outbreaks.
+    No new antibiotics in development. We need new drug targets.
+    """)
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PIPELINE STEPS
+# PIPELINE + RESULTS (combined — show what we DID and what we FOUND)
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.markdown("## Step 2: Automated Analysis Pipeline")
-st.markdown("Three parallel analyses run automatically on your proteome:")
+st.markdown("## Pipeline Results")
 
-p1, p2, p3 = st.columns(3)
-
-with p1:
-    st.markdown("### Structural Mimicry")
-    st.markdown("""
-    **Tool:** Foldseek
-
-    Compares every pathogen protein's 3D structure against the
-    entire human proteome. Finds pathogen proteins that
-    *look like* human proteins — this is how pathogens
-    hijack our cellular machinery.
-    """)
-    st.metric("Mimics found", f"{mimicry['query_uniprot'].nunique():,}", help="Pathogen proteins with structural similarity to human proteins")
-
-with p2:
-    st.markdown("### PPI Network Mapping")
-    st.markdown("""
-    **Tool:** FlashPPI (GPU)
-
-    Predicts all protein-protein interactions within the pathogen.
-    Builds a network map and identifies **hub proteins** — highly
-    connected proteins that are essential for the pathogen's
-    survival. Kill the hub, kill the pathogen.
-    """)
-    st.metric("Hub proteins", f"{len(hubs)}", help="Highly connected proteins in pathogen's own network")
-
-with p3:
-    st.markdown("### Pathway Mapping")
-    st.markdown("""
-    **Tool:** STRING DB
-
-    For each human protein being mimicked, looks up what
-    biological pathways it's part of. Maps out exactly
-    *which* human systems the pathogen is targeting:
-    immune response, cell death, adhesion, etc.
-    """)
-    st.metric("Human pathways mapped", f"{mimicry['target_gene'].nunique()}", help="Unique human proteins in the interaction network")
-
-st.divider()
-
-# ═══════════════════════════════════════════════════════════════════════════
-# RESULTS: DRUG TARGETS
-# ═══════════════════════════════════════════════════════════════════════════
-
-st.markdown("## Step 3: Drug Target Results")
-st.markdown("Proteins are ranked by **convergent evidence** — the strongest targets have multiple independent signals pointing to them.")
-
-# Key metrics
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Proteins screened", f"{len(targets):,}")
-c2.metric("Drug target candidates", f"{int(targets['convergent'].sum())}", help="Proteins with both mimicry + hub signals")
-c3.metric("Known pathways recovered", "11/12", help="Validated against published literature")
-c4.metric("Enrichment", "2.9x", help="Our top hits are 2.9x more likely to be known virulence factors vs random")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Proteins in", f"{len(targets):,}")
+c2.metric("Structural mimics", f"{mimicry['query_uniprot'].nunique():,}", help="Pathogen proteins with similar 3D fold to a human protein")
+c3.metric("PPI hubs", f"{len(hubs)}", help="Essential hub proteins in pathogen's own interaction network")
+c4.metric("Convergent targets", f"{int(targets['convergent'].sum())}", help="Both a structural mimic AND a network hub")
+c5.metric("Clinical pathway hits", f"{len(clinical_hits)}", help="Pathogen proteins reaching clinically relevant human targets")
 
 st.markdown("")
 
-# Target ranking chart
-top = targets.head(50).copy()
-top["rank"] = range(1, len(top) + 1)
-top["label"] = top.apply(
-    lambda r: str(r["gene"]) if r["gene"] and not isinstance(r["gene"], float) and str(r["gene"]) != "nan"
-    else r["protein_id"][:12], axis=1
-)
-top["Signal Type"] = top["signals"].apply(
-    lambda x: "Convergent (mimicry + hub)" if len(x) >= 2 else (x[0].title() if x else "Other")
-)
+# Three-panel pipeline view
+p1, p2, p3 = st.columns(3)
 
-fig_rank = px.bar(
-    top, x="rank", y="composite_score",
-    color="Signal Type",
-    hover_data=["label", "best_human_target", "degree", "n_ppi_partners"],
-    color_discrete_map={
-        "Convergent (mimicry + hub)": "#e74c3c",
-        "Hub": "#3498db",
-        "Mimicry": "#2ecc71",
-        "Other": "#bdc3c7",
-    },
-    labels={"composite_score": "Target Score", "rank": "Rank"},
-    title="Top 50 Drug Target Candidates",
-)
-fig_rank.update_layout(
-    height=400, plot_bgcolor="white",
-    xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"),
-    font=dict(size=12),
-)
-st.plotly_chart(fig_rank, use_container_width=True)
+with p1:
+    st.markdown("#### 1. Structural Mimicry (Foldseek)")
+    st.markdown("Which pathogen proteins *look like* human proteins?")
+    fig_tm = px.histogram(
+        mimicry, x="alntmscore", nbins=40,
+        labels={"alntmscore": "TM-score"},
+        color_discrete_sequence=["#e74c3c"],
+    )
+    fig_tm.update_layout(height=250, plot_bgcolor="white", margin=dict(t=10, b=40),
+                         xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0", title=""))
+    st.plotly_chart(fig_tm, use_container_width=True)
+    st.caption(f"{mimicry['query_uniprot'].nunique()} pathogen proteins mimic {mimicry['target_gene'].nunique()} human proteins")
 
-# Expandable target table
-with st.expander("View full target list"):
-    display = top[["rank", "label", "Signal Type", "best_human_target", "mimicry_tm", "degree", "n_ppi_partners"]].rename(columns={
-        "label": "Protein", "best_human_target": "Human Target",
-        "mimicry_tm": "TM-score", "degree": "PPI Degree", "n_ppi_partners": "PPI Partners",
-    })
-    st.dataframe(display, use_container_width=True, hide_index=True)
+with p2:
+    st.markdown("#### 2. PPI Network (FlashPPI)")
+    st.markdown("Which pathogen proteins are essential hubs?")
+    fig_hubs = px.scatter(
+        hubs.head(100), x="degree", y="betweenness",
+        size="hub_score", size_max=15,
+        color="hub_score", color_continuous_scale="Reds",
+        labels={"degree": "Degree", "betweenness": "Betweenness"},
+    )
+    fig_hubs.update_layout(height=250, plot_bgcolor="white", margin=dict(t=10, b=40),
+                           xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"),
+                           coloraxis_showscale=False)
+    st.plotly_chart(fig_hubs, use_container_width=True)
+    st.caption(f"{len(hubs)} hub proteins from {network['metadata']['edge_count']:,} predicted interactions")
+
+with p3:
+    st.markdown("#### 3. Pathway Mapping (STRING)")
+    st.markdown("Which human pathways are being hijacked?")
+    # Category breakdown of clinical hits
+    cat_counts = {}
+    for _, row in clinical_hits.iterrows():
+        for cat in row["categories"].split(", "):
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+    cat_df = pd.DataFrame([{"Pathway": k, "Hits": v} for k, v in sorted(cat_counts.items(), key=lambda x: -x[1])])
+    if not cat_df.empty:
+        fig_cat = px.bar(cat_df, x="Hits", y="Pathway", orientation="h",
+                         color_discrete_sequence=["#3498db"])
+        fig_cat.update_layout(height=250, plot_bgcolor="white", margin=dict(t=10, b=40),
+                              xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"))
+        st.plotly_chart(fig_cat, use_container_width=True)
+    st.caption(f"{len(clinical_hits)} pathogen proteins reach clinically relevant targets")
 
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DEEP DIVE: EXAMPLE HIT
+# CLINICAL HITS TABLE — the actual output
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.markdown("## Step 4: Investigate a Hit")
-st.markdown("Click into any target to see *why* it was flagged and *what* human pathway it's hijacking.")
+st.markdown("## Drug Target Candidates")
+st.markdown("Pathogen proteins that structurally mimic human proteins involved in immune response, cell death, or adhesion.")
 
-st.markdown("---")
-st.markdown("### Example: GroEL — Immune System Hijacking")
+show_hits = clinical_hits[["pathogen_protein", "human_mimic", "tm_score", "seq_identity", "categories", "clinical_targets"]].rename(columns={
+    "pathogen_protein": "Pathogen Protein",
+    "human_mimic": "Human Mimic",
+    "tm_score": "TM-score",
+    "seq_identity": "Seq Identity",
+    "categories": "Category",
+    "clinical_targets": "Human Targets Reached",
+})
+st.dataframe(show_hits, use_container_width=True, hide_index=True, height=400)
 
-col_story, col_struct = st.columns([1, 1])
+st.divider()
 
-with col_story:
-    st.markdown("""
-    **What the pipeline found:**
+# ═══════════════════════════════════════════════════════════════════════════
+# STRUCTURE VIEWER — pick any hit
+# ═══════════════════════════════════════════════════════════════════════════
 
-    The pathogen protein **GroEL** (a chaperonin) has a near-identical
-    3D fold to the human protein **HSPD1**.
-    """)
+st.markdown("## 3D Structure Comparison")
+st.markdown("Compare the pathogen protein's fold to its human mimic. High TM-score = similar structure = potential to hijack the same pathway.")
 
-    # Alignment metrics
-    al1, al2, al3 = st.columns(3)
-    al1.metric("TM-score", "0.996", help="1.0 = identical fold")
-    al2.metric("RMSD", "0.55 A", help="Root mean square deviation of aligned residues")
-    al3.metric("Seq. identity", "59.1%", help="Despite similar structure, sequences have diverged")
+# Let user pick a hit
+hit_options = {
+    f"{row['pathogen_protein']} -> {row['human_mimic']} (TM={row['tm_score']:.3f}, {row['categories']})": i
+    for i, (_, row) in enumerate(clinical_hits.head(20).iterrows())
+}
 
-    st.markdown("""
-    **Why this matters:**
+selected = st.selectbox("Select a hit to visualize:", list(hit_options.keys()))
+sel_idx = hit_options[selected]
+sel_row = clinical_hits.iloc[sel_idx]
 
-    HSPD1 is recognized by **TLR2** and **TLR4** — the immune system's
-    danger sensors. By mimicking HSPD1's shape, GroEL can directly
-    activate these receptors, triggering excessive inflammation.
+met1, met2, met3, met4 = st.columns(4)
+met1.metric("TM-score", f"{sel_row['tm_score']:.3f}", help="1.0 = identical fold")
+met2.metric("Seq Identity", f"{sel_row['seq_identity']:.1%}")
+met3.metric("Category", sel_row["categories"])
+met4.metric("Targets Reached", sel_row["clinical_targets"])
 
-    This is a **known, validated interaction**. Our pipeline found it
-    *blindly*, without any prior knowledge.
-    """)
+sc1, sc2 = st.columns(2)
+pathogen_acc = sel_row["pathogen_protein"]
+# Get human accession from UniProt cache
+import json as json_mod
+cache_file = Path("cache/uniprot_cache.json")
+human_acc = None
+if cache_file.exists():
+    ucache = json_mod.loads(cache_file.read_text())
+    human_gene = sel_row["human_mimic"]
+    for acc, info in ucache.items():
+        if info.get("gene") == human_gene and info.get("organism_id") == 9606:
+            human_acc = acc
+            break
 
-with col_struct:
-    st.markdown("**3D Structure: Pathogen GroEL vs Human HSPD1**")
+with sc1:
+    st.markdown(f"**Pathogen: {pathogen_acc}**")
+    st.components.v1.iframe(
+        f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{pathogen_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+        height=400,
+    )
 
-    struct_tab1, struct_tab2 = st.tabs(["A. baumannii GroEL", "Human HSPD1"])
-    with struct_tab1:
+with sc2:
+    human_label = sel_row["human_mimic"]
+    if human_acc:
+        st.markdown(f"**Human: {human_label} ({human_acc})**")
         st.components.v1.iframe(
-            "https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-V5VAH2-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
-            height=420,
+            f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{human_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+            height=400,
         )
-    with struct_tab2:
-        st.components.v1.iframe(
-            "https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-P10809-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
-            height=420,
-        )
-    st.caption("Interactive 3D viewers — rotate and zoom to compare folds")
+    else:
+        st.markdown(f"**Human: {human_label}**")
+        st.info("Structure viewer requires UniProt accession lookup")
 
 st.divider()
 
@@ -250,8 +268,8 @@ st.divider()
 # VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.markdown("## Validation: Does It Actually Work?")
-st.markdown("We tested our pipeline against **12 known virulence pathways** from published research. The pipeline had **no prior knowledge** of any of these interactions.")
+st.markdown("## Validation")
+st.markdown("We tested the pipeline against **28 known interaction targets** across **12 published virulence pathways** — with zero prior knowledge.")
 
 KNOWN = {
     "GroEL: Immune activation": {"recovered": 3, "expected": 3, "targets": "TLR2, TLR4, HSPD1", "ref": "Bacterial Hsp60 PAMP literature"},
@@ -264,97 +282,53 @@ KNOWN = {
     "Bap: Biofilm adhesion": {"recovered": 1, "expected": 1, "targets": "FN1", "ref": "Loehfelm et al. 2008 (PMID 18024522)"},
     "LPS: Endotoxin signaling": {"recovered": 1, "expected": 4, "targets": "TLR4", "ref": "Erridge et al. 2007 (PMID 17244795)"},
     "Capsule: Immune evasion": {"recovered": 1, "expected": 2, "targets": "TLR4", "ref": "Geisinger et al. 2015 (PMID 25679516)"},
-    "Phospholipase: Membrane damage": {"recovered": 1, "expected": 2, "targets": "PLA2G4A", "ref": "Jacobs et al. 2010 (PMID 20194595)"},
+    "Phospholipase: Membrane": {"recovered": 1, "expected": 2, "targets": "PLA2G4A", "ref": "Jacobs et al. 2010 (PMID 20194595)"},
     "Siderophore: Iron acquisition": {"recovered": 0, "expected": 3, "targets": "N/A", "ref": "Yamamoto et al. 1994 (PMID 7802543)"},
 }
 
 pdf = pd.DataFrame([
     {"Pathway": k, "Recovery": v["recovered"]/v["expected"],
      "Status": "Recovered" if v["recovered"] > 0 else "Not detected",
-     "Human Targets Found": v["targets"],
-     "Reference": v["ref"]}
+     "Targets": v["targets"], "Reference": v["ref"]}
     for k, v in KNOWN.items()
 ])
 
-fig_val = px.bar(
-    pdf.sort_values("Recovery", ascending=True),
-    x="Recovery", y="Pathway", orientation="h",
-    color="Status",
-    color_discrete_map={"Recovered": "#27ae60", "Not detected": "#e74c3c"},
-    hover_data=["Human Targets Found", "Reference"],
-    labels={"Recovery": "Fraction of Known Targets Recovered"},
-    title="Blind Recovery of 12 Known Virulence Pathways",
-)
-fig_val.update_layout(
-    height=480, plot_bgcolor="white",
-    xaxis=dict(range=[0, 1.05], tickformat=".0%", gridcolor="#f0f0f0"),
-    yaxis=dict(gridcolor="#f0f0f0"),
-    font=dict(size=13),
-    showlegend=True,
-)
-st.plotly_chart(fig_val, use_container_width=True)
+col_chart, col_stats = st.columns([2, 1])
 
-val1, val2, val3, val4 = st.columns(4)
-val1.metric("Pathways found", "11 / 12")
-val2.metric("Human targets recovered", "12 / 28 (43%)")
-val3.metric("Enrichment vs random", "2.9x")
-val4.metric("Statistical significance", "p < 0.0001", help="Permutation test: probability of recovering ≥11/12 pathways by random chance. Hypergeometric p = 0.008 for target-level recovery.")
+with col_chart:
+    fig_val = px.bar(
+        pdf.sort_values("Recovery", ascending=True),
+        x="Recovery", y="Pathway", orientation="h",
+        color="Status",
+        color_discrete_map={"Recovered": "#27ae60", "Not detected": "#e74c3c"},
+        hover_data=["Targets", "Reference"],
+    )
+    fig_val.update_layout(
+        height=420, plot_bgcolor="white",
+        xaxis=dict(range=[0, 1.05], tickformat=".0%", gridcolor="#f0f0f0"),
+        yaxis=dict(gridcolor="#f0f0f0"), font=dict(size=12),
+    )
+    st.plotly_chart(fig_val, use_container_width=True)
 
-with st.expander("Statistical details"):
-    st.markdown("""
-    | Test | Statistic | p-value |
-    |------|-----------|---------|
-    | **Target-level** (hypergeometric) | 7/28 targets in 1,719 sampled proteins (expected: 2.4) | **p = 0.008** |
-    | **Target-level** (permutation, n=10,000) | z-score = 3.08 | **p = 0.01** |
-    | **2-hop target recovery** (hypergeometric) | 12/28 targets in 3,410 proteins (expected: 4.8) | **p = 0.001** |
-    | **Pathway-level** (permutation, n=100,000) | 11/12 pathways hit (0/100K random trials matched) | **p < 0.0001** |
+with col_stats:
+    st.metric("Pathways recovered", "11 / 12")
+    st.metric("Targets recovered", "12 / 28 (43%)")
+    st.metric("Enrichment", "2.9x over random")
+    st.metric("Significance", "p < 0.0001")
+    st.caption("Pathway-level permutation test (100K iterations): 0 random trials matched 11/12. Target-level hypergeometric: p = 0.008.")
 
-    Ground truth: 28 known A. baumannii → human interaction targets across 12 virulence pathways,
-    curated from peer-reviewed literature. Pipeline had no access to this ground truth during analysis.
-    """)
+with st.expander("Full validation data with references"):
+    st.dataframe(pdf[["Pathway", "Status", "Targets", "Reference"]], use_container_width=True, hide_index=True)
 
 st.divider()
-
-# ═══════════════════════════════════════════════════════════════════════════
-# NETWORK VIEW
-# ═══════════════════════════════════════════════════════════════════════════
-
-with st.expander("Explore: Structural Mimicry & PPI Network Details"):
-    net1, net2 = st.columns(2)
-
-    with net1:
-        fig_tm = px.histogram(
-            mimicry, x="alntmscore", nbins=50,
-            labels={"alntmscore": "TM-score (structural similarity to human protein)"},
-            title="Distribution of Structural Similarity Scores",
-            color_discrete_sequence=["#e74c3c"],
-        )
-        fig_tm.update_layout(height=350, plot_bgcolor="white", xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"))
-        st.plotly_chart(fig_tm, use_container_width=True)
-
-    with net2:
-        fig_hubs = px.scatter(
-            hubs, x="degree", y="betweenness",
-            size="hub_score", size_max=18,
-            hover_data=["protein"],
-            labels={"degree": "Degree (# interactions)", "betweenness": "Betweenness Centrality"},
-            title="Pathogen PPI Network: Hub Proteins",
-            color="hub_score", color_continuous_scale="Reds",
-        )
-        fig_hubs.update_layout(height=350, plot_bgcolor="white", xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"))
-        st.plotly_chart(fig_hubs, use_container_width=True)
-
-    st.markdown(f"**Network:** {network['metadata']['node_count']:,} nodes, {network['metadata']['edge_count']:,} edges ({', '.join(network['metadata']['edge_types'])})")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FOOTER
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.divider()
-
 st.markdown("""
-**How it scales:** This pipeline processed 3,661 proteins end-to-end in ~30 minutes on a single GPU node.
-Foldseek and FlashPPI are both linear-time — you could screen every WHO priority pathogen in a day.
+**Scales to any pathogen.** This pipeline ran end-to-end in ~30 minutes on a single GPU node.
+Foldseek and FlashPPI are both linear-time. You could screen every WHO priority pathogen in a day.
 """)
 
-st.caption("PathogenScope | Bio x AI Hackathon 2026 | Built with Foldseek, FlashPPI, STRING DB, AlphaFold | Gabriel, Joe, Joseph, Zijian")
+st.caption("PathogenScope | Bio x AI Hackathon 2026 | Foldseek + FlashPPI + STRING + AlphaFold | Gabriel, Joe, Joseph, Zijian")
