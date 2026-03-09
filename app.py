@@ -16,7 +16,22 @@ st.markdown("""
     [data-testid="stAppViewContainer"] { background-color: #ffffff; }
     [data-testid="stHeader"] { background-color: #ffffff; }
     .block-container { padding-top: 2rem; max-width: 1200px; }
-    .stMetric { background-color: #f8f9fa; padding: 16px; border-radius: 12px; border: 1px solid #e9ecef; }
+    .stMetric { background-color: #f8f9fa; padding: 20px; border-radius: 12px; border: 1px solid #e9ecef; }
+
+    /* Presentation-sized fonts */
+    h1 { font-size: 3.2rem !important; }
+    h2 { font-size: 2.2rem !important; }
+    h3 { font-size: 1.7rem !important; }
+    h4 { font-size: 1.4rem !important; }
+    p, li, .stMarkdown, [data-testid="stMarkdownContainer"] p {
+        font-size: 1.15rem !important;
+        line-height: 1.7 !important;
+    }
+    [data-testid="stMetricValue"] { font-size: 2rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 1.05rem !important; }
+    [data-testid="stCaptionContainer"] { font-size: 0.95rem !important; }
+    code, pre { font-size: 0.95rem !important; }
+    .stDataFrame { font-size: 1rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
