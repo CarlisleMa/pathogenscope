@@ -208,23 +208,24 @@ with col_story:
     **What the pipeline found:**
 
     The pathogen protein **GroEL** (a chaperonin) has a near-identical
-    3D fold to the human protein **HSPD1** (TM-score = 0.996).
+    3D fold to the human protein **HSPD1**.
+    """)
 
+    # Alignment metrics
+    al1, al2, al3 = st.columns(3)
+    al1.metric("TM-score", "0.996", help="1.0 = identical fold")
+    al2.metric("RMSD", "0.55 A", help="Root mean square deviation of aligned residues")
+    al3.metric("Seq. identity", "59.1%", help="Despite similar structure, sequences have diverged")
+
+    st.markdown("""
     **Why this matters:**
 
     HSPD1 is recognized by **TLR2** and **TLR4** — the immune system's
     danger sensors. By mimicking HSPD1's shape, GroEL can directly
     activate these receptors, triggering excessive inflammation.
 
-    This is a **known, validated interaction** — published in the
-    scientific literature. Our pipeline found it *blindly*, without
-    any prior knowledge.
-
-    **Drug opportunity:**
-
-    A small molecule that disrupts the GroEL-TLR interaction could
-    reduce the inflammatory damage that makes A. baumannii infections
-    so deadly.
+    This is a **known, validated interaction**. Our pipeline found it
+    *blindly*, without any prior knowledge.
     """)
 
 with col_struct:
@@ -253,24 +254,25 @@ st.markdown("## Validation: Does It Actually Work?")
 st.markdown("We tested our pipeline against **12 known virulence pathways** from published research. The pipeline had **no prior knowledge** of any of these interactions.")
 
 KNOWN = {
-    "GroEL → Immune activation": {"recovered": 3, "expected": 3, "targets": "TLR2, TLR4, HSPD1"},
-    "Porin → Apoptosis": {"recovered": 3, "expected": 4, "targets": "CASP3, BAX, BCL2"},
-    "OmpA → Immune evasion": {"recovered": 4, "expected": 7, "targets": "TLR2, TLR4, FN1, CASP3"},
-    "DnaK → Immune activation": {"recovered": 2, "expected": 3, "targets": "TLR2, TLR4"},
-    "DnaJ → Chaperone mimicry": {"recovered": 2, "expected": 2, "targets": "DNAJA1, DNAJB1"},
-    "Efflux → Drug resistance": {"recovered": 2, "expected": 2, "targets": "ABCB1, ABCG2"},
-    "Ata → Host adhesion": {"recovered": 1, "expected": 5, "targets": "FN1"},
-    "Bap → Biofilm adhesion": {"recovered": 1, "expected": 1, "targets": "FN1"},
-    "LPS → Endotoxin signaling": {"recovered": 1, "expected": 4, "targets": "TLR4"},
-    "Capsule → Immune evasion": {"recovered": 1, "expected": 2, "targets": "TLR4"},
-    "Phospholipase → Membrane damage": {"recovered": 1, "expected": 2, "targets": "PLA2G4A"},
-    "Siderophore → Iron acquisition": {"recovered": 0, "expected": 3, "targets": "—"},
+    "GroEL: Immune activation": {"recovered": 3, "expected": 3, "targets": "TLR2, TLR4, HSPD1", "ref": "Bacterial Hsp60 PAMP literature"},
+    "Porin: Apoptosis": {"recovered": 3, "expected": 4, "targets": "CASP3, BAX, BCL2", "ref": "Rumbo et al. 2014 (PMID 25156738)"},
+    "OmpA: Immune evasion": {"recovered": 4, "expected": 7, "targets": "TLR2, TLR4, FN1, CASP3", "ref": "Choi et al. 2008 (PMID 19068136)"},
+    "DnaK: Immune activation": {"recovered": 2, "expected": 3, "targets": "TLR2, TLR4", "ref": "Bacterial Hsp70 PAMP literature"},
+    "DnaJ: Chaperone mimicry": {"recovered": 2, "expected": 2, "targets": "DNAJA1, DNAJB1", "ref": "Cardoso et al. 2010 (PMID 20576751)"},
+    "Efflux: Drug resistance": {"recovered": 2, "expected": 2, "targets": "ABCB1, ABCG2", "ref": "Magnet et al. 2001 (PMID 11709311)"},
+    "Ata: Host adhesion": {"recovered": 1, "expected": 5, "targets": "FN1", "ref": "Bentancor et al. 2012 (PMID 22609912)"},
+    "Bap: Biofilm adhesion": {"recovered": 1, "expected": 1, "targets": "FN1", "ref": "Loehfelm et al. 2008 (PMID 18024522)"},
+    "LPS: Endotoxin signaling": {"recovered": 1, "expected": 4, "targets": "TLR4", "ref": "Erridge et al. 2007 (PMID 17244795)"},
+    "Capsule: Immune evasion": {"recovered": 1, "expected": 2, "targets": "TLR4", "ref": "Geisinger et al. 2015 (PMID 25679516)"},
+    "Phospholipase: Membrane damage": {"recovered": 1, "expected": 2, "targets": "PLA2G4A", "ref": "Jacobs et al. 2010 (PMID 20194595)"},
+    "Siderophore: Iron acquisition": {"recovered": 0, "expected": 3, "targets": "N/A", "ref": "Yamamoto et al. 1994 (PMID 7802543)"},
 }
 
 pdf = pd.DataFrame([
     {"Pathway": k, "Recovery": v["recovered"]/v["expected"],
      "Status": "Recovered" if v["recovered"] > 0 else "Not detected",
-     "Human targets found": v["targets"]}
+     "Human Targets Found": v["targets"],
+     "Reference": v["ref"]}
     for k, v in KNOWN.items()
 ])
 
@@ -279,7 +281,7 @@ fig_val = px.bar(
     x="Recovery", y="Pathway", orientation="h",
     color="Status",
     color_discrete_map={"Recovered": "#27ae60", "Not detected": "#e74c3c"},
-    hover_data=["Human targets found"],
+    hover_data=["Human Targets Found", "Reference"],
     labels={"Recovery": "Fraction of Known Targets Recovered"},
     title="Blind Recovery of 12 Known Virulence Pathways",
 )
@@ -292,10 +294,24 @@ fig_val.update_layout(
 )
 st.plotly_chart(fig_val, use_container_width=True)
 
-val1, val2, val3 = st.columns(3)
+val1, val2, val3, val4 = st.columns(4)
 val1.metric("Pathways found", "11 / 12")
 val2.metric("Human targets recovered", "12 / 28 (43%)")
 val3.metric("Enrichment vs random", "2.9x")
+val4.metric("Statistical significance", "p < 0.0001", help="Permutation test: probability of recovering ≥11/12 pathways by random chance. Hypergeometric p = 0.008 for target-level recovery.")
+
+with st.expander("Statistical details"):
+    st.markdown("""
+    | Test | Statistic | p-value |
+    |------|-----------|---------|
+    | **Target-level** (hypergeometric) | 7/28 targets in 1,719 sampled proteins (expected: 2.4) | **p = 0.008** |
+    | **Target-level** (permutation, n=10,000) | z-score = 3.08 | **p = 0.01** |
+    | **2-hop target recovery** (hypergeometric) | 12/28 targets in 3,410 proteins (expected: 4.8) | **p = 0.001** |
+    | **Pathway-level** (permutation, n=100,000) | 11/12 pathways hit (0/100K random trials matched) | **p < 0.0001** |
+
+    Ground truth: 28 known A. baumannii → human interaction targets across 12 virulence pathways,
+    curated from peer-reviewed literature. Pipeline had no access to this ground truth during analysis.
+    """)
 
 st.divider()
 
