@@ -254,61 +254,24 @@ if cache_file.exists():
             human_acc = acc
             break
 
-view_mode = st.radio("View mode", ["Superimposed (aligned)", "Side by side"], horizontal=True)
-
-if view_mode == "Superimposed (aligned)" and human_acc:
-    import py3Dmol
-    import urllib.request
-
-    @st.cache_data
-    def fetch_cif(accession):
-        for v in [6, 4, 3]:
-            url = f"https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v{v}.cif"
-            try:
-                with urllib.request.urlopen(url, timeout=10) as resp:
-                    return resp.read().decode("utf-8")
-            except Exception:
-                continue
-        return None
-
-    cif1 = fetch_cif(pathogen_acc)
-    cif2 = fetch_cif(human_acc)
-
-    if cif1 and cif2:
-        viewer = py3Dmol.view(width="100%", height=500)
-        viewer.addModel(cif1, "cif")
-        viewer.setStyle({"model": 0}, {"cartoon": {"color": "#e74c3c"}})  # pathogen = red
-        viewer.addModel(cif2, "cif")
-        viewer.setStyle({"model": 1}, {"cartoon": {"color": "#3498db"}})  # human = blue
-        # Align model 1 onto model 0
-        viewer.zoomTo()
-
-        from stmol import showmol
-        st.markdown(f"**Red:** Pathogen {pathogen_acc} &nbsp;&nbsp; **Blue:** Human {sel_row['human_mimic']} ({human_acc})")
-        showmol(viewer, height=500)
-        st.caption("Both structures loaded in the same coordinate frame. Rotate to compare folds.")
-    else:
-        st.warning("Could not fetch one or both structures from AlphaFold.")
-
-else:
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        st.markdown(f"**Pathogen: {pathogen_acc}**")
+sc1, sc2 = st.columns(2)
+with sc1:
+    st.markdown(f"**Pathogen: {pathogen_acc}**")
+    st.components.v1.iframe(
+        f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{pathogen_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+        height=400,
+    )
+with sc2:
+    human_label = sel_row["human_mimic"]
+    if human_acc:
+        st.markdown(f"**Human: {human_label} ({human_acc})**")
         st.components.v1.iframe(
-            f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{pathogen_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
+            f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{human_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
             height=400,
         )
-    with sc2:
-        human_label = sel_row["human_mimic"]
-        if human_acc:
-            st.markdown(f"**Human: {human_label} ({human_acc})**")
-            st.components.v1.iframe(
-                f"https://molstar.org/viewer/?structure-url=https%3A%2F%2Falphafold.ebi.ac.uk%2Ffiles%2FAF-{human_acc}-F1-model_v6.cif&structure-url-format=mmcif&hide-controls=1",
-                height=400,
-            )
-        else:
-            st.markdown(f"**Human: {human_label}**")
-            st.info("Structure viewer requires UniProt accession lookup")
+    else:
+        st.markdown(f"**Human: {human_label}**")
+        st.info("Structure viewer requires UniProt accession lookup")
 
 st.divider()
 
